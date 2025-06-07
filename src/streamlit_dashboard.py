@@ -17,19 +17,25 @@ from src.dashboard.utils.constants import APP_TITLE, SIDEBAR_INFO
 
 def main():
     """Main Streamlit dashboard application."""
-    # Set page title and layout
+    # Set page title and layout with custom icon
     st.set_page_config(
         page_title=APP_TITLE,
-        page_icon="🤖",
+        page_icon="./assets/aws.svg",
         layout="wide"
     )
     
     # Initialize session state
     initialize_session_state()
     
-    # Header
-    st.title(APP_TITLE)
-    st.markdown("Create, manage, and visualize LLM benchmark evaluations")
+    # Header with logo and title
+    col1, col2 = st.columns([1, 3])
+    
+    with col1:
+        st.image("./assets/aws.svg", width=150)
+    
+    with col2:
+        st.title(APP_TITLE)
+        st.markdown("Create, manage, and visualize LLM benchmark evaluations using LLM-as-a-JURY methodology")
     
     # Sidebar with info
     with st.sidebar:

@@ -12,7 +12,7 @@ This dashboard provides an intuitive interface for:
 - Monitoring evaluation progress
 - Viewing results and reports
 
-For more details, see the [README.md](https://github.com/aws-samples/amazon-bedrock-samples/poc-to-prod/360-eval.git)
+For more details, see the [README.md](https://github.com/aws-samples/amazon-bedrock-samples/tree/360-eval/poc-to-prod/360-eval)
 """
 
 # Default directories
