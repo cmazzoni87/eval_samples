@@ -15,6 +15,10 @@ from src.dashboard.components.results_viewer import ResultsViewerComponent
 from src.dashboard.utils.state_management import initialize_session_state
 from src.dashboard.utils.constants import APP_TITLE, SIDEBAR_INFO
 
+# Initialize session state at module level to ensure it's available before component rendering
+if "evaluations" not in st.session_state:
+    initialize_session_state()
+
 def main():
     """Main Streamlit dashboard application."""
     # Set page title and layout with custom icon
@@ -24,7 +28,7 @@ def main():
         layout="wide"
     )
     
-    # Initialize session state
+    # Initialize session state again to ensure all variables are set
     initialize_session_state()
     
     # Header with logo and title
