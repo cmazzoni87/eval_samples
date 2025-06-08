@@ -2,13 +2,15 @@
 
 import streamlit as st
 import pandas as pd
-from ..utils.benchmark_runner import run_benchmark_async
+from ..utils.benchmark_runner import run_benchmark_async, sync_evaluations_from_files
 
 class EvaluationMonitorComponent:
     """Component for monitoring active evaluations."""
     
     def render(self):
         """Render the evaluation monitor component."""
+        # Sync evaluation statuses from files
+        sync_evaluations_from_files()
         
         st.subheader("Active Evaluations")
         
@@ -39,6 +41,12 @@ class EvaluationMonitorComponent:
                         )
                 
                 st.divider()
+            
+            # Add refresh button for active evaluations
+            st.button(
+                "Refresh Status",
+                on_click=sync_evaluations_from_files
+            )
         
         st.subheader("Available Evaluations")
         

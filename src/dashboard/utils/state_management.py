@@ -114,22 +114,31 @@ def load_evaluation(eval_id):
 
 def update_evaluation_status(eval_id, status, progress=None):
     """Update the status of an evaluation."""
-    for i, eval_config in enumerate(st.session_state.evaluations):
-        if eval_config["id"] == eval_id:
-            st.session_state.evaluations[i]["status"] = status
-            st.session_state.evaluations[i]["updated_at"] = datetime.now().isoformat()
-            if progress is not None:
-                st.session_state.evaluations[i]["progress"] = progress
-            
-            # Also update active and completed lists
-            if status == "running":
-                if eval_id not in [e["id"] for e in st.session_state.active_evaluations]:
-                    st.session_state.active_evaluations.append(eval_config.copy())
-            elif status == "completed":
-                # Remove from active list
-                st.session_state.active_evaluations = [e for e in st.session_state.active_evaluations if e["id"] != eval_id]
-                # Add to completed list if not already there
-                if eval_id not in [e["id"] for e in st.session_state.completed_evaluations]:
-                    st.session_state.completed_evaluations.append(eval_config.copy())
-            
-            return
+    # Make sure session state is initialized
+    if "evaluations" not in st.session_state:
+        initialize_session_state()
+        
+    try:
+        for i, eval_config in enumerate(st.session_state.evaluations):
+            if eval_config["id"] == eval_id:
+                st.session_state.evaluations[i]["status"] = status
+                st.session_state.evaluations[i]["updated_at"] = datetime.now().isoformat()
+                if progress is not None:
+                    st.session_state.evaluations[i]["progress"] = progress
+                
+                # Also update active and completed lists
+                if status == "running":
+                    if eval_id not in [e["id"] for e in st.session_state.active_evaluations]:
+                        st.session_state.active_evaluations.append(eval_config.copy())
+                elif status == "completed":
+                    # Remove from active list
+                    st.session_state.active_evaluations = [e for e in st.session_state.active_evaluations if e["id"] != eval_id]
+                    # Add to completed list if not already there
+                    if eval_id not in [e["id"] for e in st.session_state.completed_evaluations]:
+                        st.session_state.completed_evaluations.append(eval_config.copy())
+                
+                return
+    except Exception as e:
+        # Handle cases where session state might not be accessible (like in a thread)
+        print(f"Warning: Could not update session state: {str(e)}")
+        # Just continue - the file-based status will be used instead

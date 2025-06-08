@@ -3,13 +3,17 @@
 import streamlit as st
 import pandas as pd
 import os
+import json
 from pathlib import Path
+from ..utils.benchmark_runner import sync_evaluations_from_files
 
 class ResultsViewerComponent:
     """Component for viewing evaluation results."""
     
     def render(self):
         """Render the results viewer component."""
+        # Sync evaluation statuses from files
+        sync_evaluations_from_files()
         
         st.subheader("Completed Evaluations")
         
@@ -35,6 +39,12 @@ class ResultsViewerComponent:
             
             eval_df = pd.DataFrame(eval_data)
             st.dataframe(eval_df)
+            
+            # Add refresh button
+            st.button(
+                "Refresh Results",
+                on_click=sync_evaluations_from_files
+            )
             
             # Select an evaluation to view results
             selected_eval_id = st.selectbox(
@@ -79,6 +89,21 @@ class ResultsViewerComponent:
     
     def _show_evaluation_results(self, eval_id):
         """Show detailed results for a specific evaluation."""
+        # First try to find status file for the most up-to-date information
+        output_dir = Path(st.session_state.current_evaluation_config["output_dir"])
+        status_file = output_dir / f"eval_{eval_id}_status.json"
+        
+        # Check if status file exists and has results
+        results_path = None
+        if status_file.exists():
+            try:
+                with open(status_file, 'r') as f:
+                    status_data = json.load(f)
+                    if "results" in status_data:
+                        results_path = status_data["results"]
+            except:
+                pass
+        
         # Find the evaluation configuration
         eval_config = None
         for e in st.session_state.evaluations:
@@ -106,16 +131,18 @@ class ResultsViewerComponent:
         st.dataframe(judges_df)
         
         # Display report if available
-        if eval_config.get("results"):
+        # First check results from status file, then from session state
+        if results_path or eval_config.get("results"):
+            report_path = results_path or eval_config.get("results")
             st.write("#### Evaluation Report")
             st.write("The following HTML report was generated:")
-            st.write(f"[{os.path.basename(eval_config['results'])}]({eval_config['results']})")
+            st.write(f"[{os.path.basename(report_path)}]({report_path})")
             
             # Provide option to view report
             st.button(
                 "View Report",
                 on_click=self._show_report,
-                args=(eval_config["results"],)
+                args=(report_path,)
             )
     
     def _show_report(self, report_path):
