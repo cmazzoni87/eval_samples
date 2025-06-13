@@ -64,7 +64,7 @@ class EvaluationMonitorComponent:
         # Add a UI indicator for the log file location
         from ..utils.constants import PROJECT_ROOT
         log_dir = os.path.join(PROJECT_ROOT, 'logs')
-        st.info(f"📋 Logs available at: {log_dir}")
+        st.info(f"📋 Benchmark logs available at: {log_dir} (Only 360-benchmark logs are saved to disk)")
         
         # Get current session time
         current_session_start = st.session_state.get('session_start_time', time.time())
@@ -368,25 +368,35 @@ class EvaluationMonitorComponent:
         if not logs_dir or not os.path.exists(logs_dir):
             st.error("Logs directory not found.")
             return
-            
-        # Show stdout log
-        stdout_log = Path(logs_dir) / "stdout.log"
-        if stdout_log.exists():
-            with st.expander("Standard Output Log", expanded=True):
-                with open(stdout_log, 'r') as f:
+        
+        # Search for benchmark log file
+        from ..utils.constants import PROJECT_ROOT
+        log_dir = os.path.join(PROJECT_ROOT, 'logs')
+        benchmark_logs = list(Path(log_dir).glob(f"360-benchmark-*-{eval_config['name']}.log"))
+        
+        if benchmark_logs:
+            benchmark_log = benchmark_logs[0]
+            with st.expander("Benchmark Log", expanded=True):
+                with open(benchmark_log, 'r') as f:
                     log_content = f.read()
                 st.code(log_content)
-                
-        # Show stderr log
-        stderr_log = Path(logs_dir) / "stderr.log"
-        if stderr_log.exists():
-            with st.expander("Error Log"):
-                with open(stderr_log, 'r') as f:
-                    log_content = f.read()
-                if log_content.strip():
-                    st.code(log_content)
-                else:
-                    st.info("No errors reported.")
+        else:
+            st.warning("No benchmark log file found for this evaluation. Only 360-benchmark logs are saved to disk.")
+            
+        # Access stdout/stderr captures if available 
+        try:
+            # This is a simplified approach - ideally we'd make these available through an API
+            from ..utils.benchmark_runner import stdout_capture, stderr_capture
+            
+            if hasattr(stdout_capture, 'getvalue') and stdout_capture.getvalue():
+                with st.expander("Standard Output (In-Memory)", expanded=True):
+                    st.code(stdout_capture.getvalue())
+            
+            if hasattr(stderr_capture, 'getvalue') and stderr_capture.getvalue():
+                with st.expander("Error Output (In-Memory)"):
+                    st.code(stderr_capture.getvalue())
+        except (ImportError, NameError, AttributeError):
+            st.info("In-memory logs not available - only benchmark logs are saved to disk.")
     
     def _generate_report(self, eval_config):
         """Generate a report for a completed evaluation."""
@@ -473,7 +483,7 @@ class EvaluationMonitorComponent:
             # Show log file location to user
             from ..utils.constants import PROJECT_ROOT
             log_dir = os.path.join(PROJECT_ROOT, 'logs')
-            st.info(f"Check logs in: {log_dir}")
+            st.info(f"Check benchmark logs in: {log_dir} (Only 360-benchmark logs are saved to disk)")
             
         if failed_evals:
             for name, error in failed_evals:

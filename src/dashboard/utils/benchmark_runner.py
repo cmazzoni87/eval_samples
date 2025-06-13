@@ -22,18 +22,21 @@ from .csv_processor import (
 from .constants import PROJECT_ROOT
 DASHBOARD_LOG_DIR = os.path.join(PROJECT_ROOT, 'logs')
 os.makedirs(DASHBOARD_LOG_DIR, exist_ok=True)
-dashboard_log_file = os.path.join(DASHBOARD_LOG_DIR, f'dashboard_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
 
-# Configure root logger for dashboard
+# Configure root logger for dashboard using in-memory logging
 dashboard_logger = logging.getLogger('dashboard')
 dashboard_logger.setLevel(logging.DEBUG)
 
-# File handler
-file_handler = logging.FileHandler(dashboard_log_file)
-file_handler.setLevel(logging.DEBUG)
-file_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(file_format)
-dashboard_logger.addHandler(file_handler)
+# Use in-memory logging with an in-memory buffer
+from io import StringIO
+# Global variables to store stdout/stderr captures
+stdout_capture = StringIO()
+stderr_capture = StringIO()
+memory_handler = logging.StreamHandler(StringIO())
+memory_handler.setLevel(logging.DEBUG)
+memory_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+memory_handler.setFormatter(memory_format)
+dashboard_logger.addHandler(memory_handler)
 
 # Stream handler for console output
 stream_handler = logging.StreamHandler(sys.stdout)
@@ -42,7 +45,7 @@ stream_format = logging.Formatter('%(levelname)s - %(message)s')
 stream_handler.setFormatter(stream_format)
 dashboard_logger.addHandler(stream_handler)
 
-dashboard_logger.info(f"Dashboard logger initialized. Log file: {dashboard_log_file}")
+dashboard_logger.info("Dashboard logger initialized (in-memory mode)")
 
 # Store evaluation configs locally for thread safety
 _thread_local_evaluations = {}
@@ -167,10 +170,7 @@ def run_benchmark_process(eval_id):
         # Prepare command arguments
         jsonl_filename = os.path.basename(jsonl_path)
         
-        # Create log files
-        stdout_log = logs_dir / "stdout.log"
-        stderr_log = logs_dir / "stderr.log"
-        
+        # Create in-memory buffers instead of log files
         # Get current script directory for reliable relative paths
         script_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         
@@ -197,79 +197,100 @@ def run_benchmark_process(eval_id):
         dashboard_logger.info(f"Executing benchmark command for evaluation {eval_id}:")
         dashboard_logger.info(" ".join(cmd))
         
-        # Run the benchmark command with log file redirects
-        with open(stdout_log, 'w') as stdout_file, open(stderr_log, 'w') as stderr_file:
-            try:
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=stdout_file,
-                    stderr=stderr_file,
-                    text=True,
-                    cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # Run from src directory
-                )
+        # Create stdout/stderr capture variables
+        stdout_capture = StringIO()
+        stderr_capture = StringIO()
+        
+        # Run the benchmark command with output capture
+        try:
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # Run from src directory
+            )
+            
+            dashboard_logger.info(f"Started subprocess with PID {process.pid}")
+            
+            # Set up threads to read process output
+            def read_stdout():
+                for line in iter(process.stdout.readline, ''):
+                    stdout_capture.write(line)
+                    dashboard_logger.debug(f"STDOUT: {line.strip()}")
+            
+            def read_stderr():
+                for line in iter(process.stderr.readline, ''):
+                    stderr_capture.write(line)
+                    dashboard_logger.error(f"STDERR: {line.strip()}")
+            
+            stdout_thread = threading.Thread(target=read_stdout)
+            stderr_thread = threading.Thread(target=read_stderr)
+            stdout_thread.daemon = True
+            stderr_thread.daemon = True
+            stdout_thread.start()
+            stderr_thread.start()
+            
+            # Monitor evaluation state
+            poll_count = 0
+            while True:
+                # Check if process is still running
+                if process.poll() is not None:
+                    dashboard_logger.info(f"Process completed with return code {process.returncode}")
+                    break
                 
-                dashboard_logger.info(f"Started subprocess with PID {process.pid}")
+                # Periodically log that we're still monitoring the process
+                if poll_count % 6 == 0:  # Every minute (6 * 10 seconds)
+                    dashboard_logger.info(f"Process {process.pid} still running (poll count: {poll_count})")
+                    
+                    # Periodically check for reports being generated
+                    reports = list(output_dir.glob(f"*{evaluation_config['name']}*.html"))
+                    if reports:
+                        dashboard_logger.info(f"Found {len(reports)} HTML reports while process is running")
                 
-                # Monitor evaluation state by checking logs and reports
-                poll_count = 0
-                while True:
-                    # Check if process is still running
-                    if process.poll() is not None:
-                        dashboard_logger.info(f"Process completed with return code {process.returncode}")
-                        break
-                    
-                    # Periodically log that we're still monitoring the process
-                    if poll_count % 6 == 0:  # Every minute (6 * 10 seconds)
-                        dashboard_logger.info(f"Process {process.pid} still running (poll count: {poll_count})")
-                        
-                        # Periodically check for reports being generated
-                        reports = list(output_dir.glob(f"*{evaluation_config['name']}*.html"))
-                        if reports:
-                            dashboard_logger.info(f"Found {len(reports)} HTML reports while process is running")
-                    
-                    # Check for error indicators in stderr
-                    stderr_content = ""
-                    if os.path.exists(stderr_log) and os.path.getsize(stderr_log) > 0:
-                        with open(stderr_log, 'r') as f:
-                            stderr_content = f.read()
-                    
-                    # Look for critical errors
-                    if "Error:" in stderr_content or "Exception:" in stderr_content:
-                        error_excerpt = stderr_content.split("Error:")[1].strip()[:500] if "Error:" in stderr_content else stderr_content.split("Exception:")[1].strip()[:500]
-                        dashboard_logger.error(f"Detected error in stderr: {error_excerpt}")
-                        _update_status_file(status_file, "failed", 0, 
-                                          logs_dir=str(logs_dir), 
-                                          error=stderr_content[:500])
-                        process.terminate()
-                        dashboard_logger.info(f"Terminated process {process.pid} due to error")
-                        break
-                    
-                    # Wait before checking again
-                    time.sleep(10)
-                    poll_count += 1
+                # Check for error indicators in captured stderr
+                stderr_content = stderr_capture.getvalue()
                 
-                # Process completed - check final status
-                return_code = process.wait()
-                
-                # Check for errors
-                if return_code != 0:
-                    with open(stderr_log, 'r') as f:
-                        stderr_content = f.read()
-                    dashboard_logger.error(f"Process failed with return code {return_code}")
-                    dashboard_logger.error(f"Error content: {stderr_content[:1000]}")
+                # Look for critical errors
+                if "Error:" in stderr_content or "Exception:" in stderr_content:
+                    error_excerpt = stderr_content.split("Error:")[1].strip()[:500] if "Error:" in stderr_content else stderr_content.split("Exception:")[1].strip()[:500]
+                    dashboard_logger.error(f"Detected error in stderr: {error_excerpt}")
                     _update_status_file(status_file, "failed", 0, 
-                                      logs_dir=str(logs_dir),
+                                      logs_dir=str(logs_dir), 
                                       error=stderr_content[:500])
-                    return
+                    process.terminate()
+                    dashboard_logger.info(f"Terminated process {process.pid} due to error")
+                    break
                 
-                dashboard_logger.info(f"Process completed successfully")
-                
-            except Exception as e:
-                dashboard_logger.exception(f"Exception during subprocess execution: {str(e)}")
+                # Wait before checking again
+                time.sleep(10)
+                poll_count += 1
+            
+            # Make sure we've read all output
+            stdout_thread.join(timeout=5)
+            stderr_thread.join(timeout=5)
+            
+            # Process completed - check final status
+            return_code = process.wait()
+            
+            # Check for errors
+            if return_code != 0:
+                stderr_content = stderr_capture.getvalue()
+                dashboard_logger.error(f"Process failed with return code {return_code}")
+                dashboard_logger.error(f"Error content: {stderr_content[:1000]}")
                 _update_status_file(status_file, "failed", 0, 
                                   logs_dir=str(logs_dir),
-                                  error=f"Subprocess error: {str(e)}")
+                                  error=stderr_content[:500])
                 return
+            
+            dashboard_logger.info(f"Process completed successfully")
+            
+        except Exception as e:
+            dashboard_logger.exception(f"Exception during subprocess execution: {str(e)}")
+            _update_status_file(status_file, "failed", 0, 
+                              logs_dir=str(logs_dir),
+                              error=f"Subprocess error: {str(e)}")
+            return
         
         # Find the latest HTML report
         reports = list(output_dir.glob(f"*{evaluation_config['name']}*.html"))

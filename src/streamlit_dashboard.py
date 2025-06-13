@@ -9,12 +9,11 @@ sys.path.append(project_root)
 
 # Configure logging
 os.makedirs(os.path.join(project_root, 'logs'), exist_ok=True)
-dashboard_log_file = os.path.join(project_root, 'logs', 'streamlit_dashboard.log')
+# Use in-memory logging instead of file-based logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    filename=dashboard_log_file,
-    filemode='a'
+    handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger('streamlit_dashboard')
 logger.info("Starting Streamlit dashboard")
