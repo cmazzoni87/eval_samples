@@ -37,17 +37,21 @@ class EvaluationSetupComponent:
             # Column selection
             col1, col2 = st.columns(2)
             with col1:
+                prompt_col = st.session_state.current_evaluation_config.get("prompt_column")
                 st.selectbox(
                     "Prompt Column",
                     options=columns,
+                    index=None if prompt_col is None else columns.index(prompt_col) if prompt_col in columns else None,
                     key="prompt_column",
                     on_change=self._update_prompt_column
                 )
             
             with col2:
+                golden_col = st.session_state.current_evaluation_config.get("golden_answer_column")
                 st.selectbox(
                     "Golden Answer Column",
                     options=columns,
+                    index=None if golden_col is None else columns.index(golden_col) if golden_col in columns else None,
                     key="golden_answer_column",
                     on_change=self._update_golden_answer_column
                 )
@@ -155,6 +159,9 @@ class EvaluationSetupComponent:
             df = read_csv_file(st.session_state.csv_upload)
             if df is not None:
                 st.session_state.current_evaluation_config["csv_data"] = df
+                # Reset column selections to ensure user explicitly chooses them
+                st.session_state.current_evaluation_config["prompt_column"] = None
+                st.session_state.current_evaluation_config["golden_answer_column"] = None
     
     def _update_prompt_column(self):
         st.session_state.current_evaluation_config["prompt_column"] = st.session_state.prompt_column

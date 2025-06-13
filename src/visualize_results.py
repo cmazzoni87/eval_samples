@@ -8,25 +8,51 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 import pytz
+import sys
 
 
 # Configuration
 TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+# Get project root directory
+PROJECT_ROOT = Path(os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
+
 # Setup logger
 logger = logging.getLogger(__name__)
+log_dir = PROJECT_ROOT / "logs"
+os.makedirs(log_dir, exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    filename=log_dir / f"visualize_results_{TIMESTAMP}.log",
+    filemode='a'
+)
+logger.info(f"Starting visualization with project root: {PROJECT_ROOT}")
 
-with open("./assets/html_template.txt", 'r') as file:
-    HTML_TEMPLATE = file.read()
+# Load HTML template with absolute path
+template_path = PROJECT_ROOT / "assets" / "html_template.txt"
+try:
+    with open(template_path, 'r') as file:
+        HTML_TEMPLATE = file.read()
+    logger.info(f"Loaded HTML template from {template_path}")
+except FileNotFoundError:
+    logger.error(f"HTML template not found at {template_path}")
+    HTML_TEMPLATE = """<!DOCTYPE html>
+<html>
+<head><title>LLM Benchmark Report</title></head>
+<body><h1>LLM Benchmark Report</h1><p>Template not found, using fallback.</p></body>
+</html>"""
 
 
 def extract_model_name(model_id):
     """Extract clean model name from ID."""
     if '.' in model_id:
         parts = model_id.split('.')
-        if len(parts) >= 2:
+        if len(parts) == 3:
             model_name = parts[-1].split(':')[0].split('-v')[0]
-            return model_name
+        else:
+            model_name = parts[-2] + '.' + parts[-1]
+        return model_name
     return model_id.split(':')[0]
 
 def parse_json_string(json_str):
@@ -44,11 +70,35 @@ def parse_json_string(json_str):
 
 def load_data(directory):
     """Load and prepare benchmark data."""
+    # Ensure directory is a Path object
+    directory = Path(directory)
+    logger.info(f"Looking for CSV files in: {directory}")
+    
     # Load CSV files
     files = glob.glob(str(directory / "invocations_*.csv"))
     if not files:
+        logger.error(f"No invocation CSVs found in {directory}")
         raise FileNotFoundError(f"No invocation CSVs found in {directory}")
-    df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
+    
+    logger.info(f"Found {len(files)} CSV files: {files}")
+    dataframes = []
+    
+    for f in files:
+        try:
+            logger.info(f"Reading file: {f}")
+            df_file = pd.read_csv(f)
+            logger.info(f"Read {len(df_file)} rows from {f}")
+            dataframes.append(df_file)
+        except Exception as e:
+            logger.error(f"Error reading {f}: {str(e)}")
+            continue
+    
+    if not dataframes:
+        logger.error("No valid data found in any CSV files")
+        raise ValueError("No valid data found in any CSV files")
+    
+    df = pd.concat(dataframes, ignore_index=True)
+    logger.info(f"Combined data has {len(df)} rows")
 
     # Clean and prepare data
     df = df[df['api_call_status'] == 'Success'].reset_index(drop=True)
@@ -61,6 +111,31 @@ def load_data(directory):
     df['task_success'] = df['judge_success']
     # Calculate tokens per second
     df['OTPS'] = df['output_tokens'] / (df['time_to_last_byte'] + 0.001)
+
+    # ── Cost summary ───────────────────────────────────────────────────────────
+    cost_stats = (
+        df.groupby(["model_id", "inference_profile"])["response_cost"]
+          .agg(avg_cost="mean", total_cost="sum", num_invocations="count")
+    )
+
+    # ── Latency percentiles (50/90/95/99) ──────────────────────────────────────
+    latency_stats = (
+        df.groupby(["model_id", "inference_profile"])["time_to_last_byte"]
+          .quantile([0.50, 0.90, 0.95, 0.99])         # returns MultiIndex
+          .unstack(level=-1)                          # percentiles → columns
+    )
+    latency_stats.columns = [f"p{int(q*100)}" for q in latency_stats.columns]
+
+    # ── Combine both sets of metrics ──────────────────────────────────────────
+    summary = cost_stats.join(latency_stats)
+
+    # Optional: forecast spend per model/profile (30-day projection)
+    summary["monthly_forecast"] = (
+        summary["avg_cost"]
+        * (summary["num_invocations"] / df.shape[0])
+        * 30
+    )
+    df = pd.concat([df, summary], axis=1)
 
     return df
 
@@ -581,19 +656,30 @@ def generate_task_recommendations(model_task_metrics):
 
 def create_html_report(output_dir, timestamp):
     """Generate HTML benchmark report with task-specific analysis."""
+    # Ensure output_dir is an absolute path
+    if isinstance(output_dir, str):
+        if not os.path.isabs(output_dir):
+            output_dir = PROJECT_ROOT / output_dir
+        output_dir = Path(output_dir)
+    
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Using output directory: {output_dir}")
 
-    # Set up logging for report generation
-    log_dir = 'logs'
+    # Use log directory from project root
+    log_dir = PROJECT_ROOT / "logs"
     os.makedirs(log_dir, exist_ok=True)
-    report_log_file = f"{log_dir}/report_generation-{timestamp}.log"
+    report_log_file = log_dir / f"report_generation-{timestamp}.log"
     logger.info(f"Report generation logs will be saved to: {report_log_file}")
 
     # Load and process data
     logger.info("Loading and processing data...")
-
-    df = load_data(output_dir)
+    try:
+        df = load_data(output_dir)
+        logger.info(f"Loaded data with {len(df)} records from {output_dir}")
+    except Exception as e:
+        logger.error(f"Error loading data: {str(e)}")
+        raise
 
     # Calculate metrics
     logger.info("Calculating model-task metrics...")
@@ -666,8 +752,9 @@ def create_html_report(output_dir, timestamp):
 
     # Write report to file
     out_file = output_dir / f"llm_benchmark_report_{timestamp}.html"
+    logger.info(f"Writing HTML report to: {out_file}")
     out_file.write_text(html, encoding="utf-8")
-    logger.info(f"HTML report written to: {out_file}")
+    logger.info(f"HTML report written successfully")
 
     return out_file
 
@@ -1034,15 +1121,19 @@ def create_regional_performance_analysis(df):
         borderpad=10,
         align="center"
     )
-
-
     return fig
 
 
 
 if __name__ == "__main__":
-    OUTPUT_DIR = Path(
-        "./benchmark_results")
+    # Use absolute path relative to project root
+    OUTPUT_DIR = PROJECT_ROOT / "benchmark_results"
     logger.info(f"Starting LLM benchmark report generation with timestamp: {TIMESTAMP}")
-    report_file = create_html_report(OUTPUT_DIR, TIMESTAMP)
-    logger.info(f"Report generation complete: {report_file}")
+    try:
+        report_file = create_html_report(OUTPUT_DIR, TIMESTAMP)
+        logger.info(f"Report generation complete: {report_file}")
+        print(f"Report generated successfully: {report_file}")
+    except Exception as e:
+        logger.error(f"Error generating report: {str(e)}", exc_info=True)
+        print(f"Error generating report: {str(e)}")
+        sys.exit(1)

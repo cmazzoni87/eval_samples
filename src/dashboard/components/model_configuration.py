@@ -5,7 +5,9 @@ import pandas as pd
 from ..utils.constants import (
     DEFAULT_BEDROCK_MODELS, 
     DEFAULT_OPENAI_MODELS,
-    DEFAULT_COST_MAP, 
+    DEFAULT_COST_MAP,
+    DEFAULT_JUDGES_COST,
+    DEFAULT_JUDGES,
     AWS_REGIONS
 )
 from ..utils.state_management import save_current_evaluation
@@ -22,18 +24,20 @@ class ModelConfigurationComponent:
         selected_region = st.selectbox(
             "AWS Region",
             options=AWS_REGIONS,
-            index=0,  # Default to us-east-1
+            index=1,  # Default to us-east-2
             key="aws_region"
         )
         
         # Available models tabs (Bedrock, OpenAI)
-        tab1, tab2 = st.tabs(["Bedrock Models", "OpenAI Models"])
+        tab1, tab2 = st.tabs(["Bedrock Models", "3P Models"])
         
         with tab1:
-            self._render_model_dropdown(DEFAULT_BEDROCK_MODELS, "bedrock", selected_region)
+            bedrock_models = [model[0] for model in DEFAULT_BEDROCK_MODELS]
+            self._render_model_dropdown(bedrock_models, "bedrock", selected_region)
         
         with tab2:
-            self._render_model_dropdown(DEFAULT_OPENAI_MODELS, "openai", selected_region)
+            openai_models = [model[0] for model in DEFAULT_OPENAI_MODELS]
+            self._render_model_dropdown(openai_models, "openai", selected_region)
         
         # Selected models display
         st.subheader("Selected Models")
@@ -84,27 +88,24 @@ class ModelConfigurationComponent:
         if not is_valid and missing_items:
             st.warning(f"Please complete the following before saving: {', '.join(missing_items)}")
         
-        # Action buttons
-        col1, col2, col3 = st.columns(3)
+        # Action buttons - only save and reset, no direct run
+        col1, col2 = st.columns(2)
         
         with col1:
-            st.button(
+            if st.button(
                 "Save Configuration",
-                on_click=save_current_evaluation,
-                disabled=not is_valid
-            )
+                disabled=not is_valid,
+            ):
+                save_current_evaluation()
+                st.success(f"Configuration '{st.session_state.current_evaluation_config['name']}' saved successfully!")
+                # Debug information
+                print(f"Saved configuration to session state. Total evaluations: {len(st.session_state.evaluations)}")
+                print(f"Evaluation IDs: {[e['id'] for e in st.session_state.evaluations]}")
         
         with col2:
             st.button(
                 "Reset Configuration",
                 on_click=self._reset_configuration
-            )
-        
-        with col3:
-            st.button(
-                "Run Evaluation",
-                on_click=self._run_evaluation,
-                disabled=not is_valid
             )
     
     def _render_model_dropdown(self, model_list, prefix, region):
@@ -155,8 +156,8 @@ class ModelConfigurationComponent:
     def _render_judge_selection(self, region):
         """Render the judge model selection UI."""
         # Use Claude models as default judges
-        judge_options = [m for m in DEFAULT_BEDROCK_MODELS if "claude" in m.lower() or "nova" in m.lower()]
-        
+        judge_options = [m[0] for m in DEFAULT_JUDGES]
+        judge_regions = {m[0]: m[1] for m in DEFAULT_JUDGES}
         col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
         
         with col1:
@@ -167,9 +168,9 @@ class ModelConfigurationComponent:
             )
         
         # Get default costs
-        default_input_cost = DEFAULT_COST_MAP.get(selected_judge, {"input": 0.001, "output": 0.002})["input"]
-        default_output_cost = DEFAULT_COST_MAP.get(selected_judge, {"input": 0.001, "output": 0.002})["output"]
-        
+        default_input_cost = DEFAULT_JUDGES_COST.get(selected_judge, {"input": 0.001, "output": 0.002})["input"]
+        default_output_cost = DEFAULT_JUDGES_COST.get(selected_judge, {"input": 0.001, "output": 0.002})["output"]
+        region = judge_regions[selected_judge]
         with col2:
             judge_input_cost = st.number_input(
                 "Input Cost",

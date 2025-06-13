@@ -1,11 +1,23 @@
 import streamlit as st
-import os
 import sys
-import time
-from pathlib import Path
+import logging
+import os
 
 # Add the project root to path to allow importing dashboard modules
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(project_root)
+
+# Configure logging
+os.makedirs(os.path.join(project_root, 'logs'), exist_ok=True)
+dashboard_log_file = os.path.join(project_root, 'logs', 'streamlit_dashboard.log')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    filename=dashboard_log_file,
+    filemode='a'
+)
+logger = logging.getLogger('streamlit_dashboard')
+logger.info("Starting Streamlit dashboard")
 
 # Import dashboard components
 from src.dashboard.components.evaluation_setup import EvaluationSetupComponent
@@ -13,59 +25,100 @@ from src.dashboard.components.model_configuration import ModelConfigurationCompo
 from src.dashboard.components.evaluation_monitor import EvaluationMonitorComponent
 from src.dashboard.components.results_viewer import ResultsViewerComponent
 from src.dashboard.utils.state_management import initialize_session_state
-from src.dashboard.utils.constants import APP_TITLE, SIDEBAR_INFO
+from src.dashboard.utils.constants import APP_TITLE, SIDEBAR_INFO, PROJECT_ROOT
 
 # Initialize session state at module level to ensure it's available before component rendering
 if "evaluations" not in st.session_state:
     initialize_session_state()
+    
+# Debug session state
+print("Session state initialized at module level:")
+print(f"Evaluations: {len(st.session_state.evaluations)}")
+print(f"Active evaluations: {len(st.session_state.active_evaluations)}")
+print(f"Completed evaluations: {len(st.session_state.completed_evaluations)}")
 
 def main():
     """Main Streamlit dashboard application."""
-    # Set page title and layout with custom icon
-    st.set_page_config(
-        page_title=APP_TITLE,
-        page_icon="./assets/aws.svg",
-        layout="wide"
-    )
-    
-    # Initialize session state again to ensure all variables are set
-    initialize_session_state()
-    
-    # Header with logo and title
-    col1, col2 = st.columns([1, 3])
-    
-    with col1:
-        st.image("./assets/aws.svg", width=150)
-    
-    with col2:
-        st.title(APP_TITLE)
-        st.markdown("Create, manage, and visualize LLM benchmark evaluations using LLM-as-a-JURY methodology")
-    
-    # Sidebar with info
-    with st.sidebar:
-        st.markdown(SIDEBAR_INFO)
-        st.divider()
+    try:
+        # Set page title and layout with custom icon
+        logger.info("Initializing Streamlit dashboard")
         
-        # Navigation tabs in sidebar
-        tab_names = ["Setup", "Monitor", "Results"]
-        active_tab = st.radio("Navigation", tab_names)
-    
-    # Main area - show different components based on active tab
-    if active_tab == "Setup":
-        # Use tabs instead of nested expanders
-        setup_tab1, setup_tab2 = st.tabs(["Evaluation Setup", "Model Configuration"])
+        icon_path = os.path.join(PROJECT_ROOT, "assets", "scale_icon.png")
         
-        with setup_tab1:
-            EvaluationSetupComponent().render()
+        st.set_page_config(
+            page_title=APP_TITLE,
+            page_icon=icon_path,
+            layout="wide"
+        )
         
-        with setup_tab2:
-            ModelConfigurationComponent().render()
+        # Initialize session state again to ensure all variables are set
+        initialize_session_state()
+        logger.info("Session state initialized")
+        
+        # Display log file path for debugging
+        log_dir = os.path.join(PROJECT_ROOT, 'logs')
+        
+        # Add log information to sidebar
+        with st.sidebar:
+            with st.expander("📋 Debug Information"):
+                st.info(f"Log Directory: {log_dir}")
+                st.info(f"Project Root: {PROJECT_ROOT}")
+                # Add button to show latest logs
+                if st.button("Show Latest Logs"):
+                    log_files = [f for f in os.listdir(log_dir) if f.endswith('.log')]
+                    if log_files:
+                        latest_log = max(log_files, key=lambda x: os.path.getmtime(os.path.join(log_dir, x)))
+                        with open(os.path.join(log_dir, latest_log), 'r') as f:
+                            log_content = f.read()
+                        st.text_area("Latest Log Entries", log_content[-5000:], height=300)
+                    else:
+                        st.warning("No log files found")
+        
+        # Header with logo and title
+        col1, col2 = st.columns([1, 3])
+        
+        with col1:
+            st.image(icon_path, width=150)
+        
+        with col2:
+            st.title(APP_TITLE)
+            st.markdown("Create, manage, and visualize LLM benchmark evaluations using LLM-as-a-JURY methodology")
+        
+        # Sidebar with info
+        with st.sidebar:
+            st.markdown(SIDEBAR_INFO)
+            st.divider()
             
-    elif active_tab == "Monitor":
-        EvaluationMonitorComponent().render()
+            # Navigation tabs in sidebar
+            tab_names = ["Setup", "Monitor", "Results"]
+            active_tab = st.radio("Navigation", tab_names)
+            logger.info(f"Selected tab: {active_tab}")
         
-    elif active_tab == "Results":
-        ResultsViewerComponent().render()
+        # Main area - show different components based on active tab
+        if active_tab == "Setup":
+            # Use tabs instead of nested expanders
+            setup_tab1, setup_tab2 = st.tabs(["Evaluation Setup", "Model Configuration"])
+            
+            with setup_tab1:
+                logger.info("Rendering Evaluation Setup component")
+                EvaluationSetupComponent().render()
+            
+            with setup_tab2:
+                logger.info("Rendering Model Configuration component")
+                ModelConfigurationComponent().render()
+                
+        elif active_tab == "Monitor":
+            logger.info("Rendering Evaluation Monitor component")
+            EvaluationMonitorComponent().render()
+            
+        elif active_tab == "Results":
+            logger.info("Rendering Results Viewer component")
+            ResultsViewerComponent().render()
+            
+    except Exception as e:
+        logger.exception(f"Unhandled exception in main dashboard: {str(e)}")
+        st.error(f"An error occurred: {str(e)}")
+        st.info(f"Check logs for details at: {log_dir}")
 
 if __name__ == "__main__":
     main()

@@ -8,11 +8,11 @@ import random
 import json
 import tiktoken
 import re
+from google import genai
 from litellm import completion
-from litellm import cost_per_token
 from botocore.exceptions import ClientError
 from botocore.config import Config
-
+from google.genai.types import HttpOptions, Part
 
 logger = logging.getLogger(__name__)
 
@@ -27,15 +27,15 @@ def get_body(prompt, max_tokens, temperature, top_p):
     return body, cfg
 
 
-def setup_logging(log_dir='logs'):
+def setup_logging(log_dir='logs', experiment='none'):
     ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     os.makedirs(log_dir, exist_ok=True)
-    log_file = f"{log_dir}/advanced-benchmark-{ts}.log"
-
+    log_file = f"{log_dir}/360-benchmark-{ts}-{experiment}.log"
+    
     # Reset root logger and handlers to avoid duplicate logs
     for handler in logging.root.handlers[:]:
         logging.root.removeHandler(handler)
-
+    
     # Configure root logger
     logging.basicConfig(
         filename=log_file,
@@ -43,17 +43,17 @@ def setup_logging(log_dir='logs'):
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         filemode='w'
     )
-
+    
     # Add console handler for warnings and above
     console = logging.StreamHandler()
     console.setLevel(logging.WARNING)
     console.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
     logging.getLogger('').addHandler(console)
-
+    
     # Configure logger for this module
     module_logger = logging.getLogger(__name__)
     module_logger.info(f"Logging initialized. Log file: {log_file}")
-
+    
     return ts, log_file
 
 
@@ -124,7 +124,7 @@ def converse_with_bedrock(
             error_message = error.response['Error']['Message']
 
             # Handle throttling errors with exponential backoff
-            if error_code in ['ThrottlingException', 'TooManyRequestsException', 'ServiceUnavailableException']:
+            if error_code in ['ThrottlingException', 'TooManyRequestsException', 'ServiceUnavailableException', 'ModelErrorException']:
                 # request_count += 1
                 if attempts < max_retries:
                     # Apply jitter to backoff time if enabled
@@ -168,19 +168,22 @@ def converse_with_bedrock(
 
 
 def extract_json_with_llm(all_metrics, text, judge_model_id, judge_region, cfg):
-    prompt = f"""If present extract and return the JSON that meets this criteria from the text:
-            # JSON schema to extract:
-            ```json
-    {{
-      "scores": {{
-        "{all_metrics[0]}": <int>,
-        "{all_metrics[1]}": <int>,
-        ...
-      }}
-    }}
-    ```
-    # Body of Text:
-    {text}
+    metrics_entries = [f'            "{metric}": <int>' for metric in all_metrics]
+    metrics_string = ",\n".join(metrics_entries)
+
+    prompt = f"""## Instruction
+Extract and return the JSON object from the given text that matches the specified JSON schema. The schema is:
+```json
+{{
+    "scores": {{
+{metrics_string}
+            }}
+}}
+```
+## Text
+{text}
+
+Provide your response immediately without any preamble or additional information.
             """
     body = [{"role": "user", "content": [{"text": prompt}]}]
     resp, = converse_with_bedrock(messages=body,
@@ -230,56 +233,66 @@ def llm_judge_template(all_metrics,
                        ):
 
     metrics_list = "\n".join(f"- {m}" for m in all_metrics)
+    metrics_entries = [f'            "{metric}": <int>' for metric in all_metrics]
+    metrics_string = ",\n".join(metrics_entries)
     return f"""
-        You are an expert evaluator.  
-        Task: {task_types}
+    ## You are an expert evaluator.  
+    # Task: {task_types}
 
-        Task description: {task_criteria}
+    # Task description: {task_criteria}
 
-        Original Prompt:
-        {prompt}
+    # Original Prompt:
+    {prompt}
 
-        Model Response:
-        {model_response}
+    # Model Response:
+    {model_response}
 
-        Golden (Reference) Response:
-        {golden_answer}
+    # Golden (Reference) Response:
+    {golden_answer}
 
-        Please evaluate the model response on the following metrics:
-        {metrics_list}
+    # Please evaluate the model response on the following metrics:
+    {metrics_list}
 
-        For each metric, assign an integer score from 1 (worst) to 5 (best).
+    # For each metric, assign an integer score from 1 (worst) to 5 (best).
 
-        **Output JSON only** in this format:
-        ```json
-        {{
-          "scores": {{
-            "{all_metrics[0]}": <int>,
-            "{all_metrics[1]}": <int>,
-            ...
-          }}
-        }}
-        ```
-        """.strip()
+    ## IMPORTANT: **Output JSON only** in this format:
+    ```json
+    {{
+      "scores": {{
+{metrics_string}
+      }}
+    }}
+    ```
+    """.strip()
 
 
 # Count tokens using tiktoken
-def count_tokens(text: str, model_name: str) -> int:
-    encoding = tiktoken.encoding_for_model(model_name.split('/')[-1])
+def count_oai_tokens(text: str) -> int:
+    encoding = tiktoken.encoding_for_model("gpt-4o")
     return len(encoding.encode(text))
 
 
+def count_gcp_tokens(provider_client, text: str) -> int:
+    return provider_client.models.count_tokens(model="gemini-1.5-flash", contents=text).total_tokens
+
+
 # Run streaming inference and collect metrics
-def run_3p_inference(model_name: str, prompt_text: str, provider_params: dict):
+def run_3p_inference(model_name: str,
+                     prompt_text: str,
+                     _input_cost:float,
+                     _output_cost:float,
+                     provider_params: dict):
 
     # Concatenate user prompt for token counting
     messages = [{ "content": prompt_text, "role": "user"}]
-    input_tokens = count_tokens(prompt_text, model_name)
-
     start_time = time.time()
     response_chunks = []
     first = True
     time_to_first_token = 0
+    if 'gemini' in model_name:
+        os.environ['GEMINI_API_KEY'] = provider_params['api_key']
+        provider_params = {}
+
     for chunk in completion(
         model=model_name,
         messages=messages,
@@ -295,15 +308,22 @@ def run_3p_inference(model_name: str, prompt_text: str, provider_params: dict):
 
     total_runtime = time.time() - start_time
     full_response = "".join(response_chunks)
-
-    completion_tokens = count_tokens(full_response, model_name)
-    output_tokens = count_tokens(full_response, model_name)
+    if 'openai' in model_name:
+        output_tokens = count_oai_tokens(full_response)
+        input_tokens = count_oai_tokens(prompt_text)
+    elif 'gemini' in model_name:
+        client = genai.Client(http_options=HttpOptions(api_version="v1"))
+        output_tokens = count_gcp_tokens(client, full_response)
+        input_tokens = count_gcp_tokens(client, prompt_text)
+    else:
+        # AZURE FOR NOW
+        output_tokens = count_oai_tokens(full_response)
+        input_tokens = count_oai_tokens(prompt_text)
 
     tokens_per_sec = output_tokens / total_runtime
+    input_cost = input_tokens * (_input_cost / 1000)
+    output_cost = output_tokens * (_output_cost / 1000)
 
-    input_cost, output_cost = cost_per_token(model=model_name,
-                                             prompt_tokens=input_tokens,
-                                             completion_tokens=completion_tokens)
 
     return {
         "time_to_first_byte": time_to_first_token,

@@ -25,7 +25,7 @@ def initialize_session_state():
     if "current_evaluation_config" not in st.session_state:
         st.session_state.current_evaluation_config = {
             "id": None,
-            "name": f"Benchmark-{datetime.now().strftime('%Y%m%d')}",
+            "name": f"Benchmark-{datetime.now().strftime("%Y%m%d%H%M%S")}",
             "csv_data": None,
             "prompt_column": None,
             "golden_answer_column": None,
@@ -80,22 +80,46 @@ def create_new_evaluation():
 
 def save_current_evaluation():
     """Save the current evaluation configuration to the list of evaluations."""
+    # Debug current state
+    print(f"Current session state before saving: {len(st.session_state.evaluations)} evaluations")
+    
     if st.session_state.current_evaluation_config["id"] is None:
         # This is a new evaluation
         new_eval = st.session_state.current_evaluation_config.copy()
         new_eval["id"] = str(uuid.uuid4())
         new_eval["created_at"] = datetime.now().isoformat()
         new_eval["updated_at"] = datetime.now().isoformat()
+        new_eval["status"] = "configuring"  # Ensure status is set
+        
+        # Add to evaluations list
         st.session_state.evaluations.append(new_eval)
+        print(f"Added new evaluation with ID: {new_eval['id']}, Name: {new_eval['name']}")
+        print(f"Session state after adding: {len(st.session_state.evaluations)} evaluations")
+        
+        # Reset current config for next evaluation
         reset_current_evaluation()
     else:
         # This is an update to an existing evaluation
         eval_id = st.session_state.current_evaluation_config["id"]
+        updated = False
+        
+        # Update existing evaluation
         for i, eval_config in enumerate(st.session_state.evaluations):
             if eval_config["id"] == eval_id:
                 st.session_state.current_evaluation_config["updated_at"] = datetime.now().isoformat()
                 st.session_state.evaluations[i] = st.session_state.current_evaluation_config.copy()
+                print(f"Updated evaluation with ID: {eval_id}, Name: {st.session_state.evaluations[i]['name']}")
+                updated = True
                 break
+                
+        if not updated:
+            # If not found (unusual case), add as new
+            print(f"Evaluation with ID {eval_id} not found in list, adding as new")
+            new_eval = st.session_state.current_evaluation_config.copy() 
+            new_eval["updated_at"] = datetime.now().isoformat()
+            st.session_state.evaluations.append(new_eval)
+            
+        # Reset current config for next evaluation
         reset_current_evaluation()
 
 

@@ -46,12 +46,21 @@ def convert_to_jsonl(df, prompt_col, golden_answer_col, task_type, task_criteria
     Returns:
         Path to the created JSONL file
     """
-    if df is None or prompt_col not in df.columns or golden_answer_col not in df.columns:
-        st.error("Invalid CSV data or column names")
+    if df is None:
+        st.error("Invalid CSV data")
         return None
     
-    # Create output directory if it doesn't exist
-    prompt_eval_dir = Path(output_dir) / "prompt-evaluations"
+    if prompt_col is None or golden_answer_col is None:
+        st.error("Please select both prompt and golden answer columns")
+        return None
+        
+    if prompt_col not in df.columns or golden_answer_col not in df.columns:
+        st.error(f"Selected columns not found in CSV: {prompt_col}, {golden_answer_col}")
+        return None
+
+    # Use the absolute prompt-evaluations directory path from constants
+    from ..utils.constants import PROJECT_ROOT, DEFAULT_PROMPT_EVAL_DIR
+    prompt_eval_dir = Path(DEFAULT_PROMPT_EVAL_DIR)
     os.makedirs(prompt_eval_dir, exist_ok=True)
     
     # Generate JSONL file path
@@ -76,10 +85,11 @@ def convert_to_jsonl(df, prompt_col, golden_answer_col, task_type, task_criteria
         for entry in jsonl_data:
             f.write(json.dumps(entry) + '\n')
     
+    # Return both the absolute path and the filename for CLI compatibility
     return str(jsonl_path)
 
 
-def create_model_profiles_jsonl(models, output_dir):
+def create_model_profiles_jsonl(models, output_dir, custom_filename=None):
     """
     Create a JSONL file with model profiles.
     
@@ -90,10 +100,12 @@ def create_model_profiles_jsonl(models, output_dir):
     Returns:
         Path to the created JSONL file
     """
-    prompt_eval_dir = Path(output_dir) / "prompt-evaluations"
+    # Use the absolute prompt-evaluations directory path from constants
+    from ..utils.constants import PROJECT_ROOT, DEFAULT_PROMPT_EVAL_DIR
+    prompt_eval_dir = Path(DEFAULT_PROMPT_EVAL_DIR)
     os.makedirs(prompt_eval_dir, exist_ok=True)
     
-    jsonl_path = prompt_eval_dir / "model_profiles.jsonl"
+    jsonl_path = prompt_eval_dir / (custom_filename or "model_profiles.jsonl")
     
     with open(jsonl_path, 'w', encoding='utf-8') as f:
         for model in models:
@@ -101,15 +113,15 @@ def create_model_profiles_jsonl(models, output_dir):
                 "model_id": model["id"],
                 "region": model["region"],
                 "inference_profile": "standard",
-                "input_token_cost": model["input_cost"] * 1000,  # Convert to per 1000 tokens
-                "output_token_cost": model["output_cost"] * 1000  # Convert to per 1000 tokens
+                "input_token_cost": model["input_cost"],
+                "output_token_cost": model["output_cost"]
             }
             f.write(json.dumps(entry) + '\n')
     
     return str(jsonl_path)
 
 
-def create_judge_profiles_jsonl(judges, output_dir):
+def create_judge_profiles_jsonl(judges, output_dir, custom_filename=None):
     """
     Create a JSONL file with judge model profiles.
     
@@ -120,18 +132,20 @@ def create_judge_profiles_jsonl(judges, output_dir):
     Returns:
         Path to the created JSONL file
     """
-    prompt_eval_dir = Path(output_dir) / "prompt-evaluations"
+    # Use the absolute prompt-evaluations directory path from constants
+    from ..utils.constants import PROJECT_ROOT, DEFAULT_PROMPT_EVAL_DIR
+    prompt_eval_dir = Path(DEFAULT_PROMPT_EVAL_DIR)
     os.makedirs(prompt_eval_dir, exist_ok=True)
     
-    jsonl_path = prompt_eval_dir / "judge_profiles.jsonl"
+    jsonl_path = prompt_eval_dir / (custom_filename or "judge_profiles.jsonl")
     
     with open(jsonl_path, 'w', encoding='utf-8') as f:
         for judge in judges:
             entry = {
                 "model_id": judge["id"],
                 "region": judge["region"],
-                "input_cost_per_1k": judge["input_cost"] * 1000,  # Convert to per 1000 tokens
-                "output_cost_per_1k": judge["output_cost"] * 1000  # Convert to per 1000 tokens
+                "input_cost_per_1k": judge["input_cost"],  # Convert to per 1000 tokens
+                "output_cost_per_1k": judge["output_cost"]  # Convert to per 1000 tokens
             }
             f.write(json.dumps(entry) + '\n')
     
