@@ -54,29 +54,59 @@ def convert_to_jsonl(df, prompt_col, golden_answer_col, task_type, task_criteria
         st.error("Please select both prompt and golden answer columns")
         return None
         
-    if prompt_col not in df.columns or golden_answer_col not in df.columns:
-        st.error(f"Selected columns not found in CSV: {prompt_col}, {golden_answer_col}")
-        return None
+    # For merged evaluations, the column names might be different in different dataframes
+    # Handle the case where prompt_col or golden_answer_col might not be in all columns
+    # But ensure at least one row has these columns
+    all_columns = df.columns.tolist()
+    if prompt_col not in all_columns or golden_answer_col not in all_columns:
+        # Check if this is potentially a merged dataframe with different column names
+        has_prompt_rows = False
+        has_answer_rows = False
+        
+        for col in all_columns:
+            if col == prompt_col or "prompt" in col.lower():
+                has_prompt_rows = True
+            if col == golden_answer_col or "answer" in col.lower() or "golden" in col.lower():
+                has_answer_rows = True
+                
+        if not (has_prompt_rows and has_answer_rows):
+            st.error(f"Selected columns not found in CSV: {prompt_col}, {golden_answer_col}")
+            return None
 
     # Use the absolute prompt-evaluations directory path from constants
     from ..utils.constants import PROJECT_ROOT, DEFAULT_PROMPT_EVAL_DIR
     prompt_eval_dir = Path(DEFAULT_PROMPT_EVAL_DIR)
     os.makedirs(prompt_eval_dir, exist_ok=True)
     
-    # Generate JSONL file path
-    jsonl_path = prompt_eval_dir / f"{name}.jsonl"
+    # Generate JSONL file path - use a unique name for merged evaluations
+    if "merged" in name:
+        from uuid import uuid4
+        unique_suffix = str(uuid4()).split('-')[0]
+        jsonl_path = prompt_eval_dir / f"{name}_{unique_suffix}.jsonl"
+    else:
+        jsonl_path = prompt_eval_dir / f"{name}.jsonl"
     
     # Convert DataFrame to JSONL format
     jsonl_data = []
     for _, row in df.iterrows():
+        # Skip rows that don't have the necessary columns
+        if prompt_col not in row or golden_answer_col not in row:
+            continue
+            
+        # Handle NaN values
+        prompt = row[prompt_col]
+        answer = row[golden_answer_col]
+        if pd.isna(prompt) or pd.isna(answer):
+            continue
+            
         entry = {
-            "text_prompt": row[prompt_col],
+            "text_prompt": prompt,
             "expected_output_tokens": 250,  # Default value
             "task": {
                 "task_type": task_type,
                 "task_criteria": task_criteria
             },
-            "golden_answer": row[golden_answer_col]
+            "golden_answer": answer
         }
         jsonl_data.append(entry)
     

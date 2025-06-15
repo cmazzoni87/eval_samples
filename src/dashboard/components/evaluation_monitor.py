@@ -456,7 +456,7 @@ class EvaluationMonitorComponent:
 
     def _merge_selected_evaluations(self, eval_ids):
         """Merge and run the selected evaluations as a single evaluation."""
-        from ..utils.benchmark_runner import run_merged_evaluations
+        from ..utils.benchmark_runner import merge_evaluations, run_benchmark_async
         
         dashboard_logger.info(f"Merging selected evaluations: {eval_ids}")
         
@@ -479,8 +479,18 @@ class EvaluationMonitorComponent:
         # Run the merged evaluations
         with st.spinner("Merging evaluations... This may take a moment."):
             try:
-                # Run merged evaluations
-                run_merged_evaluations(eval_ids)
+                # Merge evaluations
+                merged_config = merge_evaluations(evals_to_merge)
+                if not merged_config:
+                    st.error("Failed to merge evaluations")
+                    return
+                    
+                # Add merged evaluation to session state
+                if 'evaluations' in st.session_state:
+                    st.session_state.evaluations.append(merged_config)
+                
+                # Run the merged evaluation
+                run_benchmark_async(merged_config)
                 st.success(f"Successfully merged and started {len(eval_ids)} evaluations")
                 
                 # Show log file location to user
