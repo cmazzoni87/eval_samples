@@ -298,8 +298,13 @@ class EvaluationMonitorComponent:
             )
             
             if selected_eval_ids:
-                if st.button("Run Selected Evaluations", key="run_selected_btn"):
-                    self._run_selected_evaluations(selected_eval_ids)
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Run Selected Evaluations", key="run_selected_btn"):
+                        self._run_selected_evaluations(selected_eval_ids)
+                with col2:
+                    if st.button("Merge Selected Evaluations", key="merge_selected_btn"):
+                        self._merge_selected_evaluations(selected_eval_ids)
             
         # No automatic reruns - removed auto-refresh logic
     
@@ -448,6 +453,47 @@ class EvaluationMonitorComponent:
         except Exception as e:
             st.error(f"Error generating report: {str(e)}")
             dashboard_logger.exception(f"Error generating report: {str(e)}")
+
+    def _merge_selected_evaluations(self, eval_ids):
+        """Merge and run the selected evaluations as a single evaluation."""
+        from ..utils.benchmark_runner import run_merged_evaluations
+        
+        dashboard_logger.info(f"Merging selected evaluations: {eval_ids}")
+        
+        if len(eval_ids) < 2:
+            st.warning("Please select at least two evaluations to merge.")
+            return
+            
+        # Get the evaluation configs to merge
+        evals_to_merge = []
+        for eval_id in eval_ids:
+            for eval_config in st.session_state.evaluations:
+                if eval_config["id"] == eval_id:
+                    evals_to_merge.append(eval_config)
+                    break
+        
+        if len(evals_to_merge) < 2:
+            st.error("Could not find all selected evaluations.")
+            return
+            
+        # Run the merged evaluations
+        with st.spinner("Merging evaluations... This may take a moment."):
+            try:
+                # Run merged evaluations
+                run_merged_evaluations(eval_ids)
+                st.success(f"Successfully merged and started {len(eval_ids)} evaluations")
+                
+                # Show log file location to user
+                from ..utils.constants import PROJECT_ROOT
+                log_dir = os.path.join(PROJECT_ROOT, 'logs')
+                st.info(f"Check benchmark logs in: {log_dir} (Only 360-benchmark logs are saved to disk)")
+                
+                # Force refresh of UI state
+                sync_evaluations_from_files()
+                
+            except Exception as e:
+                st.error(f"Error merging evaluations: {str(e)}")
+                dashboard_logger.exception(f"Error merging evaluations: {str(e)}")
 
     def _run_selected_evaluations(self, eval_ids):
         """Run the selected evaluations."""

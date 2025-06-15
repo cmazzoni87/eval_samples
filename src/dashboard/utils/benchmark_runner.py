@@ -50,6 +50,195 @@ dashboard_logger.info("Dashboard logger initialized (in-memory mode)")
 # Store evaluation configs locally for thread safety
 _thread_local_evaluations = {}
 
+# Store pending evaluations for merging
+_pending_evaluations = []
+_merged_evaluation_running = False
+
+def merge_evaluations(evaluation_configs):
+    """
+    Merge multiple evaluation configurations into a single evaluation.
+    
+    Args:
+        evaluation_configs: List of evaluation configuration dictionaries
+        
+    Returns:
+        Dictionary with merged evaluation configuration
+    """
+    if not evaluation_configs:
+        dashboard_logger.error("No evaluations to merge")
+        return None
+    
+    # Create a new unique ID for the merged evaluation
+    from uuid import uuid4
+    merged_id = str(uuid4())
+    
+    # Use the first evaluation as the base for configuration parameters
+    base_config = evaluation_configs[0].copy()
+    
+    # Combine all CSV dataframes
+    import pandas as pd
+    merged_df = pd.DataFrame()
+    for config in evaluation_configs:
+        if merged_df.empty:
+            merged_df = config["csv_data"].copy()
+        else:
+            merged_df = pd.concat([merged_df, config["csv_data"]], ignore_index=True)
+    
+    # Create a merged name from all evaluation names
+    evaluation_names = [config["name"] for config in evaluation_configs]
+    merged_name = f"merged_{len(evaluation_configs)}_evaluations"
+    
+    # Get the union of all selected models across evaluations
+    all_models = set()
+    for config in evaluation_configs:
+        for model in config["selected_models"]:
+            model_key = (model["id"], model["region"])
+            all_models.add(model_key)
+    
+    # Convert back to list of dictionaries
+    merged_models = []
+    for model_id, region in all_models:
+        # Find this model in any of the configs to get the costs
+        for config in evaluation_configs:
+            for model in config["selected_models"]:
+                if model["id"] == model_id and model["region"] == region:
+                    merged_models.append(model)
+                    break
+            else:
+                continue
+            break
+    
+    # Get the union of all judge models
+    all_judges = set()
+    for config in evaluation_configs:
+        for judge in config["judge_models"]:
+            judge_key = (judge["id"], judge["region"])
+            all_judges.add(judge_key)
+    
+    # Convert back to list of dictionaries
+    merged_judges = []
+    for judge_id, region in all_judges:
+        # Find this judge in any of the configs to get the costs
+        for config in evaluation_configs:
+            for judge in config["judge_models"]:
+                if judge["id"] == judge_id and judge["region"] == region:
+                    merged_judges.append(judge)
+                    break
+            else:
+                continue
+            break
+    
+    # Create merged configuration
+    merged_config = {
+        "id": merged_id,
+        "name": merged_name,
+        "created_at": pd.Timestamp.now().isoformat(),
+        "status": "pending",
+        "progress": 0,
+        "csv_data": merged_df,
+        "prompt_column": base_config["prompt_column"],
+        "golden_answer_column": base_config["golden_answer_column"],
+        "task_type": base_config["task_type"],
+        "task_criteria": base_config["task_criteria"],
+        "selected_models": merged_models,
+        "judge_models": merged_judges,
+        # Use lowest values of concurrency parameters to be conservative
+        "parallel_calls": min([config.get("parallel_calls", 4) for config in evaluation_configs]),
+        "invocations_per_scenario": min([config.get("invocations_per_scenario", 2) for config in evaluation_configs]),
+        "sleep_between_invocations": max([config.get("sleep_between_invocations", 3) for config in evaluation_configs]),
+        "experiment_counts": min([config.get("experiment_counts", 1) for config in evaluation_configs]),
+        "temperature_variations": min([config.get("temperature_variations", 0) for config in evaluation_configs]),
+        "user_defined_metrics": base_config.get("user_defined_metrics", None)
+    }
+    
+    dashboard_logger.info(f"Created merged evaluation '{merged_name}' with ID {merged_id}")
+    dashboard_logger.info(f"Merged {len(evaluation_configs)} evaluations with {len(merged_df)} total prompts")
+    dashboard_logger.info(f"Using {len(merged_models)} models and {len(merged_judges)} judge models")
+    
+    return merged_config
+
+
+def run_merged_evaluations(pending_evals=None):
+    """
+    Run merged evaluations from the pending list.
+    
+    Args:
+        pending_evals: Optional list of evaluation IDs to merge and run
+    """
+    global _pending_evaluations, _merged_evaluation_running
+    
+    # If merged evaluation is already running, don't start another
+    if _merged_evaluation_running:
+        dashboard_logger.warning("A merged evaluation is already running. Skipping.")
+        return
+    
+    try:
+        _merged_evaluation_running = True
+        
+        # Use provided pending evaluations or the global list
+        evaluations_to_merge = []
+        
+        if pending_evals:
+            # Find the evaluation configs for the provided IDs
+            for eval_id in pending_evals:
+                for eval_config in _pending_evaluations:
+                    if eval_config["id"] == eval_id:
+                        evaluations_to_merge.append(eval_config)
+                        break
+        else:
+            # Use all pending evaluations
+            evaluations_to_merge = _pending_evaluations.copy()
+            _pending_evaluations = []  # Clear the global list
+        
+        if not evaluations_to_merge:
+            dashboard_logger.warning("No evaluations to merge and run")
+            _merged_evaluation_running = False
+            return
+        
+        # Merge the evaluations
+        merged_config = merge_evaluations(evaluations_to_merge)
+        if not merged_config:
+            dashboard_logger.error("Failed to create merged evaluation")
+            _merged_evaluation_running = False
+            return
+        
+        # Add the merged evaluation to the session state if it exists
+        if hasattr(st, 'session_state') and 'evaluations' in st.session_state:
+            st.session_state.evaluations.append(merged_config)
+        
+        # Run the merged evaluation
+        run_benchmark_async(merged_config)
+        
+        dashboard_logger.info(f"Started merged evaluation '{merged_config['name']}' with ID {merged_config['id']}")
+    
+    except Exception as e:
+        dashboard_logger.exception(f"Error running merged evaluations: {str(e)}")
+    finally:
+        _merged_evaluation_running = False
+
+
+def add_to_pending_evaluations(evaluation_config):
+    """
+    Add an evaluation to the pending list for later merging.
+    
+    Args:
+        evaluation_config: Evaluation configuration dictionary
+    
+    Returns:
+        Boolean indicating success
+    """
+    global _pending_evaluations
+    
+    try:
+        # Make a copy to avoid reference issues
+        _pending_evaluations.append(evaluation_config.copy())
+        dashboard_logger.info(f"Added evaluation '{evaluation_config['name']}' to pending list (total: {len(_pending_evaluations)})")
+        return True
+    except Exception as e:
+        dashboard_logger.error(f"Error adding evaluation to pending list: {str(e)}")
+        return False
+        
+
 def run_benchmark_async(evaluation_config):
     """
     Run a benchmark evaluation asynchronously in a separate thread.
