@@ -202,9 +202,35 @@ def run_merged_evaluations(pending_evals=None):
             _merged_evaluation_running = False
             return
         
-        # Add the merged evaluation to the session state if it exists
+        # Get the IDs of the evaluations that were merged
+        merged_eval_ids = [eval_config["id"] for eval_config in evaluations_to_merge]
+        dashboard_logger.info(f"Merged evaluation IDs: {merged_eval_ids}")
+        
+        # Add the merged evaluation to the session state and remove the original evaluations
         if hasattr(st, 'session_state') and 'evaluations' in st.session_state:
+            # Remove the original evaluations from session state
+            st.session_state.evaluations = [
+                eval_config for eval_config in st.session_state.evaluations 
+                if eval_config["id"] not in merged_eval_ids
+            ]
+            
+            # Add the merged evaluation
             st.session_state.evaluations.append(merged_config)
+            
+            # Also remove from active_evaluations and completed_evaluations lists
+            if hasattr(st.session_state, 'active_evaluations'):
+                st.session_state.active_evaluations = [
+                    eval_config for eval_config in st.session_state.active_evaluations 
+                    if eval_config["id"] not in merged_eval_ids
+                ]
+            
+            if hasattr(st.session_state, 'completed_evaluations'):
+                st.session_state.completed_evaluations = [
+                    eval_config for eval_config in st.session_state.completed_evaluations 
+                    if eval_config["id"] not in merged_eval_ids
+                ]
+                
+            dashboard_logger.info(f"Removed {len(merged_eval_ids)} original evaluations from UI lists")
         
         # Run the merged evaluation
         run_benchmark_async(merged_config)
@@ -230,9 +256,25 @@ def add_to_pending_evaluations(evaluation_config):
     global _pending_evaluations
     
     try:
+        # Check if evaluation is already in pending list
+        eval_id = evaluation_config["id"]
+        if any(eval_config["id"] == eval_id for eval_config in _pending_evaluations):
+            dashboard_logger.warning(f"Evaluation '{evaluation_config['name']}' already in pending list")
+            return True
+            
         # Make a copy to avoid reference issues
         _pending_evaluations.append(evaluation_config.copy())
         dashboard_logger.info(f"Added evaluation '{evaluation_config['name']}' to pending list (total: {len(_pending_evaluations)})")
+        
+        # Add a flag to the evaluation to mark it as pending for merge
+        # This helps the UI show it differently
+        if hasattr(st, 'session_state') and 'evaluations' in st.session_state:
+            for i, eval_config in enumerate(st.session_state.evaluations):
+                if eval_config["id"] == eval_id:
+                    st.session_state.evaluations[i]["pending_merge"] = True
+                    dashboard_logger.debug(f"Marked evaluation {eval_id} as pending_merge=True")
+                    break
+                    
         return True
     except Exception as e:
         dashboard_logger.error(f"Error adding evaluation to pending list: {str(e)}")
