@@ -68,19 +68,56 @@ def get_timestamp():
 
 def calculate_average_scores(dict_list):
     if not dict_list:
+        logger.warning("Attempted to calculate average scores with empty list")
         return {}
 
     # Initialize result dictionary
     result = {}
+    
+    # Validate input
+    valid_dicts = []
+    for i, d in enumerate(dict_list):
+        if not isinstance(d, dict):
+            logger.warning(f"Non-dictionary item at index {i} in score list: {type(d)}")
+            continue
+        if not d:
+            logger.warning(f"Empty dictionary at index {i} in score list")
+            continue
+        valid_dicts.append(d)
+    
+    if not valid_dicts:
+        logger.warning("No valid dictionaries found for score calculation")
+        return {}
 
-    # Get the keys from the first dictionary (assuming all dictionaries have the same keys)
-    keys = dict_list[0].keys()
+    # Get the keys from the first dictionary
+    keys = valid_dicts[0].keys()
 
     # Calculate the average for each key
     for key in keys:
-        total = sum(d[key] for d in dict_list)
-        average = total / len(dict_list)
-        result[f'AVG_{key}'] = round(average, 4)
+        try:
+            values = []
+            for d in valid_dicts:
+                if key in d:
+                    try:
+                        # Only include numeric values
+                        value = d[key]
+                        if isinstance(value, (int, float)):
+                            values.append(value)
+                        else:
+                            logger.warning(f"Non-numeric value '{value}' for key '{key}' in score calculation")
+                    except Exception as e:
+                        logger.warning(f"Error processing value for key '{key}': {e}")
+            
+            if values:
+                average = sum(values) / len(values)
+                result[f'AVG_{key}'] = round(average, 4)
+            else:
+                logger.warning(f"No valid values found for key '{key}' in score calculation")
+                result[f'AVG_{key}'] = None
+        except Exception as e:
+            logger.error(f"Error calculating average for key '{key}': {e}")
+            result[f'AVG_{key}'] = None
+            
     return result
 
 
@@ -209,17 +246,20 @@ def extract_json_from_text(text):
         try:
             return json.loads(json_text)
         except json.JSONDecodeError as e:
-            print("Found block but failed to parse JSON:", e)
+            logger.error(f"Found JSON block but failed to parse: {e}")
             return None
     else:
-        print("No matching JSON block found.")
+        logger.error("No matching JSON block found in response")
         return None
 
 
 def extract_json_response(all_metrics, text, judge_model_id, judge_region, cfg):
     payload = extract_json_from_text(text)
     if not payload:
+        logger.warning(f"Initial JSON extraction failed for {judge_model_id}, attempting extraction with LLM")
         payload = extract_json_with_llm(all_metrics, text, judge_model_id, judge_region, cfg)
+        if not payload:
+            logger.error(f"LLM-based JSON extraction also failed for {judge_model_id}")
     return payload
 
 

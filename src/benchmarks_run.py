@@ -104,22 +104,38 @@ def evaluate_with_judges(judges,
 
     results = []
     for j in judges:
-        r = evaluate_with_llm_judge(
-            judge_model_id=j["model_id"],
-            judge_region=j["region"],
-            prompt=prompt,
-            model_response=model_response,
-            golden_answer=golden_answer,
-            task_types=task_types,
-            task_criteria=task_criteria,
-            custom_metrics=user_defined_metrics
-        )
-        if "error" in r:
+        try:
+            logging.debug(f"Evaluating with judge model {j['model_id']}")
+            r = evaluate_with_llm_judge(
+                judge_model_id=j["model_id"],
+                judge_region=j["region"],
+                prompt=prompt,
+                model_response=model_response,
+                golden_answer=golden_answer,
+                task_types=task_types,
+                task_criteria=task_criteria,
+                custom_metrics=user_defined_metrics
+            )
+            
+            # Check for various error indicators
+            if "error" in r or r.get("judgment") == "Error inference response" or r.get("judgment") == "Error Parsing response":
+                logging.warning(f"Judge {j['model_id']} returned an error response: {r.get('explanation', 'Unknown error')}")
+                results.append({"model": j["model_id"], **r})
+                continue
+                
+            # Check if scores are valid
+            if not r.get("scores") or r.get("scores", {}).get("score") == "NULL":
+                logging.warning(f"Judge {j['model_id']} returned invalid scores: {r.get('scores', 'None')}")
+                results.append({"model": j["model_id"], **r})
+                continue
+                
+            r['judge_input_token_cost'] = r["judge_input_tokens"] * (j["input_cost_per_1k"] / 1000) # After 15 years I still don't trust the order of operators :)
+            r['judge_output_token_cost'] = r["judge_output_tokens"] * (j["output_cost_per_1k"] / 1000)
             results.append({"model": j["model_id"], **r})
-            continue
-        r['judge_input_token_cost'] = r["judge_input_tokens"] * (j["input_cost_per_1k"] / 1000) # After 15 years I still don't trust the order of operators :)
-        r['judge_output_token_cost'] = r["judge_output_tokens"] * (j["output_cost_per_1k"] / 1000)
-        results.append({"model": j["model_id"], **r})
+            logging.debug(f"Successfully evaluated with judge {j['model_id']}, judgment: {r.get('judgment', 'Unknown')}")
+        except Exception as e:
+            logging.error(f"Exception evaluating with judge {j['model_id']}: {str(e)}", exc_info=True)
+            results.append({"model": j["model_id"], "judgment": "Judge Exception", "explanation": str(e), "scores": {"score": "NULL"}})
 
 
     pass_ct = sum(1 for r in results if r["judgment"] == "PASS")
@@ -143,7 +159,7 @@ def run_bedrock_inference(
         temperature=0,
         top_p=0,
     ):
-
+    try:
         throughput_tps = None
         ttlb = None
         ttfb = None
@@ -151,7 +167,9 @@ def run_bedrock_inference(
         resp_txt = ""
         in_toks = None
         cost = None
+        request_count = 0
 
+        logging.debug(f"Building request for model {model_id} in region {region}")
         # build messages
         msgs, cfgs = get_body(prompt, max_tokens, temperature, top_p)
         r, start, request_count = converse_with_bedrock(
@@ -179,8 +197,15 @@ def run_bedrock_inference(
             ttfb = round(first - start, 4)
             ttlb = round(end - start, 4)
         if ttlb and out_toks:
-            throughput_tps = round(out_toks / ttlb, 2)
-
+            try:
+                throughput_tps = round(out_toks / ttlb, 2)
+            except ZeroDivisionError:
+                logging.warning(f"Cannot calculate throughput - time to last byte is zero for {model_id}")
+                throughput_tps = None
+        else:
+            logging.warning(f"Missing metrics data for {model_id}: ttlb={ttlb}, out_tokens={out_toks}")
+            
+        logging.debug(f"Completed inference for {model_id}: {in_toks} input tokens, {out_toks} output tokens")
         return {"throughput_tps":throughput_tps,
                 "time_to_first_byte": ttfb,
                 "time_to_last_byte": ttlb,
@@ -189,6 +214,9 @@ def run_bedrock_inference(
                 "response_cost": cost,
                 "model_response": resp_txt,
                 "request_count": request_count}
+    except Exception as e:
+        logging.error(f"Error in run_bedrock_inference for {model_id}: {str(e)}", exc_info=True)
+        raise
 
 # ----------------------------------------
 # Core benchmarking function
@@ -393,7 +421,22 @@ def execute_benchmark(_, scenarios, cfg, unprocessed_dir):
     with ThreadPoolExecutor(max_workers=cfg["parallel_calls"]) as exe:
         futures = [exe.submit(run_scn, s) for s in scenarios]
         for f in concurrent.futures.as_completed(futures):
-            all_recs.extend(f.result())
+            try:
+                result = f.result()
+                if result:
+                    all_recs.extend(result)
+                else:
+                    logging.warning("Received empty result from a scenario task")
+            except Exception as e:
+                logging.error(f"Exception in ThreadPoolExecutor task: {str(e)}", exc_info=True)
+                # Record the failure but allow other tasks to continue
+                with lock:
+                    unprocessed_records.append({
+                        "scenario": "Unknown (future failed)",
+                        "exception": str(e),
+                        "reason": "Exception in ThreadPoolExecutor task",
+                        "timestamp": get_timestamp()
+                    })
     
     # Write unprocessed records to file if any exist
     if unprocessed_records:
@@ -401,8 +444,12 @@ def execute_benchmark(_, scenarios, cfg, unprocessed_dir):
         uuid_ = str(uuid.uuid4()).split('-')[-1]
         unprocessed_file = os.path.join(unprocessed_dir, f"unprocessed_{ts}_{uuid_}.json")
         logging.warning(f"Writing {len(unprocessed_records)} unprocessed records to {unprocessed_file}")
-        with open(unprocessed_file, 'w') as f:
-            json.dump(unprocessed_records, f, indent=2, default=str)
+        try:
+            with open(unprocessed_file, 'w') as f:
+                json.dump(unprocessed_records, f, indent=2, default=str)
+            logging.info(f"Successfully wrote unprocessed records to {unprocessed_file}")
+        except Exception as e:
+            logging.error(f"Failed to write unprocessed records file: {str(e)}", exc_info=True)
             
     return all_recs
 
@@ -507,32 +554,49 @@ def main(
     all_dfs = []
     for run in range(1, experiment_counts+1):
         logging.info(f"=== Run {run}/{experiment_counts} ===")
-        results = execute_benchmark(None, scenarios, cfg, unprocessed_dir)
-        
-        if not results:
-            logging.error(f"Run {run}/{experiment_counts} produced no results. Check the unprocessed records file.")
-            continue
+        try:
+            results = execute_benchmark(None, scenarios, cfg, unprocessed_dir)
             
-        df = pd.DataFrame(results)
-        df["run_count"] = run
-        df["timestamp"] = pd.Timestamp.now()
-        out_csv = os.path.join(output_dir, f"invocations_{run}_{ts}_{uuid_}.csv")
-        df.to_csv(out_csv, index=False)
-        logging.info(f"Run {run} results saved to {out_csv}")
-        all_dfs.append(df)
+            if not results:
+                logging.error(f"Run {run}/{experiment_counts} produced no results. Check the unprocessed records file.")
+                continue
+                
+            try:
+                df = pd.DataFrame(results)
+                df["run_count"] = run
+                df["timestamp"] = pd.Timestamp.now()
+                out_csv = os.path.join(output_dir, f"invocations_{run}_{ts}_{uuid_}.csv")
+                df.to_csv(out_csv, index=False)
+                logging.info(f"Run {run} results saved to {out_csv}")
+                all_dfs.append(df)
+            except Exception as e:
+                logging.error(f"Error saving results for run {run}: {str(e)}", exc_info=True)
+        except Exception as e:
+            logging.error(f"Critical error in run {run}: {str(e)}", exc_info=True)
+            print(f"\nRun {run} failed with error: {str(e)}. Continuing with next run...")
 
     # Check for unprocessed records
-    unprocessed_files = [f for f in os.listdir(unprocessed_dir) if f.startswith("unprocessed_")]
-    if unprocessed_files:
-        logging.warning(f"Found {len(unprocessed_files)} files with unprocessed records in {unprocessed_dir}")
-        print(f"\nWarning: {len(unprocessed_files)} files with unprocessed records found in {unprocessed_dir}")
+    try:
+        unprocessed_files = [f for f in os.listdir(unprocessed_dir) if f.startswith("unprocessed_")]
+        if unprocessed_files:
+            logging.warning(f"Found {len(unprocessed_files)} files with unprocessed records in {unprocessed_dir}")
+            print(f"\nWarning: {len(unprocessed_files)} files with unprocessed records found in {unprocessed_dir}")
+    except Exception as e:
+        logging.error(f"Error checking for unprocessed records: {str(e)}", exc_info=True)
 
     if report:
-        from visualize_results import create_html_report
-        # Generate report
-        report = create_html_report(output_dir, ts)
-        print(f"\nBenchmark complete! Report: {report}")
-        logging.info(f"Benchmark run complete. Report generated at {report}")
+        try:
+            from visualize_results import create_html_report
+            # Generate report
+            report = create_html_report(output_dir, ts)
+            print(f"\nBenchmark complete! Report: {report}")
+            logging.info(f"Benchmark run complete. Report generated at {report}")
+        except ImportError as e:
+            logging.error(f"Failed to import visualization module: {str(e)}")
+            print("\nBenchmark complete, but report generation failed due to import error.")
+        except Exception as e:
+            logging.error(f"Error generating report: {str(e)}", exc_info=True)
+            print("\nBenchmark complete, but report generation failed.")
 
 
 if __name__ == "__main__":
