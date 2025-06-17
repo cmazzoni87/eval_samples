@@ -484,10 +484,32 @@ class EvaluationMonitorComponent:
                 if not merged_config:
                     st.error("Failed to merge evaluations")
                     return
-                    
-                # Add merged evaluation to session state
+                
+                # Remove the original evaluations from all session state lists
                 if 'evaluations' in st.session_state:
+                    # Remove the original evaluations from session state
+                    st.session_state.evaluations = [
+                        eval_config for eval_config in st.session_state.evaluations 
+                        if eval_config["id"] not in eval_ids
+                    ]
+                    
+                    # Add the merged evaluation
                     st.session_state.evaluations.append(merged_config)
+                    
+                    # Also remove from active_evaluations and completed_evaluations lists
+                    if hasattr(st.session_state, 'active_evaluations'):
+                        st.session_state.active_evaluations = [
+                            eval_config for eval_config in st.session_state.active_evaluations 
+                            if eval_config["id"] not in eval_ids
+                        ]
+                    
+                    if hasattr(st.session_state, 'completed_evaluations'):
+                        st.session_state.completed_evaluations = [
+                            eval_config for eval_config in st.session_state.completed_evaluations 
+                            if eval_config["id"] not in eval_ids
+                        ]
+                    
+                    dashboard_logger.info(f"Removed {len(eval_ids)} original evaluations from UI lists")
                 
                 # Run the merged evaluation
                 run_benchmark_async(merged_config)
