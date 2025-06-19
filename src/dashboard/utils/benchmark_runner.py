@@ -687,7 +687,80 @@ def _process_sequential_queue():
             dashboard_logger.info(f"Remaining in queue: {len(_sequential_queue)}")
             
             try:
-                # Run the evaluation
+                # Instead of using run_benchmark_async which starts a thread,
+                # we'll directly create the necessary files first to avoid race conditions
+                
+                # Create a status file to track progress
+                from .constants import DEFAULT_OUTPUT_DIR, PROJECT_ROOT
+                output_dir = Path(DEFAULT_OUTPUT_DIR)
+                os.makedirs(output_dir, exist_ok=True)
+                
+                # Create logs directory for this evaluation
+                logs_dir = Path(PROJECT_ROOT) / "logs" / f"eval_{eval_id}"
+                os.makedirs(logs_dir, exist_ok=True)
+                
+                # Create status file
+                status_file = output_dir / f"eval_{eval_id}_status.json"
+                _update_status_file(status_file, "in-progress", 0, logs_dir=str(logs_dir))
+                
+                # Start time to track session evaluations
+                eval_start_time = time.time()
+                _update_status_file(status_file, "in-progress", 0, logs_dir=str(logs_dir), start_time=eval_start_time)
+                
+                # Convert CSV data to JSONL
+                dashboard_logger.info(f"Converting CSV data to JSONL for evaluation {eval_id}")
+                try:
+                    jsonl_path = convert_to_jsonl(
+                        eval_config["csv_data"],
+                        eval_config["prompt_column"],
+                        eval_config["golden_answer_column"],
+                        eval_config["task_type"],
+                        eval_config["task_criteria"],
+                        "",
+                        eval_config["name"]
+                    )
+                    if not jsonl_path:
+                        dashboard_logger.error(f"Failed to convert CSV data to JSONL for evaluation {eval_id}")
+                        _update_status_file(status_file, "failed", 0, error="Failed to convert CSV data to JSONL format")
+                        continue
+                    dashboard_logger.info(f"Successfully created JSONL file at {jsonl_path}")
+                except Exception as e:
+                    dashboard_logger.exception(f"Exception while converting CSV data to JSONL: {str(e)}")
+                    _update_status_file(status_file, "failed", 0, error=f"CSV conversion error: {str(e)}")
+                    continue
+                
+                # Create model profiles JSONL
+                dashboard_logger.info(f"Creating model profiles JSONL for evaluation {eval_id}")
+                try:
+                    model_file_name = f"model_profiles_{eval_id}.jsonl"
+                    models_jsonl = create_model_profiles_jsonl(
+                        eval_config["selected_models"],
+                        "",
+                        custom_filename=model_file_name
+                    )
+                    dashboard_logger.info(f"Successfully created model profiles at {models_jsonl}")
+                except Exception as e:
+                    dashboard_logger.exception(f"Exception while creating model profiles: {str(e)}")
+                    _update_status_file(status_file, "failed", 0, error=f"Model profiles error: {str(e)}")
+                    continue
+                
+                # Create judge profiles JSONL
+                dashboard_logger.info(f"Creating judge profiles JSONL for evaluation {eval_id}")
+                try:
+                    judge_file_name = f"judge_profiles_{eval_id}.jsonl"
+                    judges_jsonl = create_judge_profiles_jsonl(
+                        eval_config["judge_models"],
+                        "",
+                        custom_filename=judge_file_name
+                    )
+                    dashboard_logger.info(f"Successfully created judge profiles at {judges_jsonl}")
+                except Exception as e:
+                    dashboard_logger.exception(f"Exception while creating judge profiles: {str(e)}")
+                    _update_status_file(status_file, "failed", 0, error=f"Judge profiles error: {str(e)}")
+                    continue
+                
+                # Now that all files are created, run the benchmark async
+                dashboard_logger.info(f"All files created successfully, starting benchmark for {eval_id}")
                 run_benchmark_async(eval_config)
                 
                 # Update evaluation status in session state
@@ -698,8 +771,7 @@ def _process_sequential_queue():
                             break
                 
                 # Wait for the evaluation to complete before starting the next one
-                from .constants import DEFAULT_OUTPUT_DIR
-                status_file = Path(DEFAULT_OUTPUT_DIR) / f"eval_{eval_id}_status.json"
+                # status_file is already defined and created above
                 dashboard_logger.info(f"Waiting for evaluation '{eval_config['name']}' to complete...")
                 
                 # Wait for the evaluation to start (status file to be created)
