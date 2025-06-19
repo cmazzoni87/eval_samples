@@ -759,16 +759,91 @@ def _process_sequential_queue():
                     _update_status_file(status_file, "failed", 0, error=f"Judge profiles error: {str(e)}")
                     continue
                 
-                # Now that all files are created, run the benchmark async
-                dashboard_logger.info(f"All files created successfully, starting benchmark for {eval_id}")
-                run_benchmark_async(eval_config)
+                # Now that all files are created, we'll directly run the benchmark subprocess
+                # rather than using run_benchmark_async (which would create files again)
+                dashboard_logger.info(f"All files created successfully, starting benchmark process for {eval_id}")
                 
-                # Update evaluation status in session state
-                if hasattr(st, 'session_state') and 'evaluations' in st.session_state:
-                    for i, e in enumerate(st.session_state.evaluations):
-                        if e["id"] == eval_id:
-                            st.session_state.evaluations[i]["queued_sequential"] = False
-                            break
+                # Store a copy of the evaluation config for thread safety
+                _thread_local_evaluations[eval_id] = eval_config.copy()
+                
+                # Make sure model and judge file names are properly set in the config
+                eval_config["model_file_name"] = model_file_name
+                eval_config["judge_file_name"] = judge_file_name
+                
+                # Prepare command arguments
+                jsonl_filename = os.path.basename(jsonl_path)
+                script_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                
+                cmd = [
+                    "python", 
+                    os.path.join(script_dir, "benchmarks_run.py"),
+                    jsonl_filename,
+                    "--output_dir", str(output_dir),
+                    "--report", "False",
+                    "--parallel_calls", str(eval_config["parallel_calls"]),
+                    "--invocations_per_scenario", str(eval_config["invocations_per_scenario"]),
+                    "--sleep_between_invocations", str(eval_config["sleep_between_invocations"]),
+                    "--experiment_counts", str(eval_config["experiment_counts"]),
+                    "--experiment_name", eval_config["name"],
+                    "--temperature_variations", str(eval_config["temperature_variations"]),
+                    "--model_file_name", model_file_name,
+                    "--judge_file_name", judge_file_name
+                ]
+                
+                if eval_config.get("user_defined_metrics"):
+                    cmd.extend(["--user_defined_metrics", eval_config["user_defined_metrics"]])
+                
+                # Log the command being executed
+                dashboard_logger.info(f"Executing benchmark command for evaluation {eval_id}:")
+                dashboard_logger.info(" ".join(cmd))
+                
+                # Create stdout/stderr capture variables
+                stdout_capture = StringIO()
+                stderr_capture = StringIO()
+                
+                # Run the benchmark command with output capture
+                try:
+                    process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # Run from src directory
+                    )
+                    
+                    dashboard_logger.info(f"Started subprocess with PID {process.pid}")
+                    
+                    # Update status in session state if available
+                    if hasattr(st, 'session_state') and "evaluations" in st.session_state:
+                        update_evaluation_status(eval_id, "running", 5)
+                        # Also update queued status
+                        for i, e in enumerate(st.session_state.evaluations):
+                            if e["id"] == eval_id:
+                                st.session_state.evaluations[i]["queued_sequential"] = False
+                                break
+                        dashboard_logger.info(f"Updated evaluation status for {eval_id} to 'running'")
+                        
+                    # Set up threads to read process output
+                    def read_stdout():
+                        for line in iter(process.stdout.readline, ''):
+                            stdout_capture.write(line)
+                            dashboard_logger.debug(f"STDOUT: {line.strip()}")
+                    
+                    def read_stderr():
+                        for line in iter(process.stderr.readline, ''):
+                            stderr_capture.write(line)
+                            dashboard_logger.error(f"STDERR: {line.strip()}")
+                    
+                    stdout_thread = threading.Thread(target=read_stdout)
+                    stderr_thread = threading.Thread(target=read_stderr)
+                    stdout_thread.daemon = True
+                    stderr_thread.daemon = True
+                    stdout_thread.start()
+                    stderr_thread.start()
+                    
+                except Exception as e:
+                    dashboard_logger.exception(f"Error starting process: {str(e)}")
+                    _update_status_file(status_file, "failed", 0, error=f"Process start error: {str(e)}")
                 
                 # Wait for the evaluation to complete before starting the next one
                 # status_file is already defined and created above
