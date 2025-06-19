@@ -133,6 +133,11 @@ class EvaluationMonitorComponent:
                             st.markdown("❌ **Status**: <span style='color:red'>Failed</span>", unsafe_allow_html=True)
                         elif status == "completed":
                             st.markdown("✅ **Status**: <span style='color:green'>Completed</span>", unsafe_allow_html=True)
+                        elif status == "queued":
+                            if eval_config.get("queued_sequential"):
+                                st.markdown("⏳ **Status**: <span style='color:purple'>Queued (Sequential)</span>", unsafe_allow_html=True)
+                            else:
+                                st.markdown("⏳ **Status**: <span style='color:purple'>Queued</span>", unsafe_allow_html=True)
                         else:
                             st.markdown(f"⚠️ **Status**: {status.capitalize()}")
                     
@@ -298,11 +303,14 @@ class EvaluationMonitorComponent:
             )
             
             if selected_eval_ids:
-                col1, col2 = st.columns(2)
+                col1, col2, col3 = st.columns(3)
                 with col1:
                     if st.button("Run Selected Evaluations", key="run_selected_btn"):
                         self._run_selected_evaluations(selected_eval_ids)
                 with col2:
+                    if st.button("Run Sequentially", key="run_sequential_btn"):
+                        self._run_evaluations_sequentially(selected_eval_ids)
+                with col3:
                     if st.button("Merge Selected Evaluations", key="merge_selected_btn"):
                         self._merge_selected_evaluations(selected_eval_ids)
             
@@ -570,3 +578,58 @@ class EvaluationMonitorComponent:
         # Force refresh of UI state
         if started_evals:
             sync_evaluations_from_files()
+            
+    def _run_evaluations_sequentially(self, eval_ids):
+        """Run the selected evaluations one at a time sequentially.
+        
+        This method queues evaluations to run one after another, avoiding parallel API calls
+        that might trigger rate limits or other API errors when using the same models.
+        
+        Args:
+            eval_ids: List of evaluation IDs to run sequentially
+        """
+        from ..utils.benchmark_runner import add_to_sequential_queue
+        
+        dashboard_logger.info(f"Queueing evaluations to run sequentially: {eval_ids}")
+        
+        if not eval_ids:
+            st.warning("No evaluations selected for sequential execution.")
+            return
+            
+        # Get the evaluation configs to run
+        evals_to_run = []
+        for eval_id in eval_ids:
+            for eval_config in st.session_state.evaluations:
+                if eval_config["id"] == eval_id:
+                    # Validate the configuration
+                    if not eval_config.get("selected_models") or not eval_config.get("judge_models"):
+                        st.error(f"Evaluation '{eval_config['name']}' is missing required configuration: models or judge models")
+                        continue
+                    evals_to_run.append(eval_config)
+                    break
+        
+        # Check if we have valid evaluations to run
+        if not evals_to_run:
+            st.error("No valid evaluations found for sequential execution.")
+            return
+            
+        # Queue the evaluations for sequential execution
+        try:
+            # Start sequential execution
+            add_to_sequential_queue(evals_to_run)
+            
+            # Show success message
+            eval_names = [e["name"] for e in evals_to_run]
+            st.success(f"Queued {len(evals_to_run)} evaluations to run sequentially: {', '.join(eval_names)}")
+            
+            # Show log file location to user
+            from ..utils.constants import PROJECT_ROOT
+            log_dir = os.path.join(PROJECT_ROOT, 'logs')
+            st.info(f"Check benchmark logs in: {log_dir} (Only 360-benchmark logs are saved to disk)")
+            
+            # Force refresh of UI state
+            sync_evaluations_from_files()
+            
+        except Exception as e:
+            st.error(f"Error queueing evaluations for sequential execution: {str(e)}")
+            dashboard_logger.exception(f"Error in sequential execution: {str(e)}")

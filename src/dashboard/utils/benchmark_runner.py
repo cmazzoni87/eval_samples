@@ -54,6 +54,11 @@ _thread_local_evaluations = {}
 _pending_evaluations = []
 _merged_evaluation_running = False
 
+# Sequential execution queue and control variables
+_sequential_queue = []
+_sequential_running = False
+_sequential_thread = None
+
 def merge_evaluations(evaluation_configs):
     """
     Merge multiple evaluation configurations into a single evaluation.
@@ -613,6 +618,127 @@ def _update_status_file(status_file, status, progress, results=None, logs_dir=No
     
     with open(status_file, 'w') as f:
         json.dump(status_data, f)
+
+
+def add_to_sequential_queue(evaluation_configs):
+    """
+    Add evaluations to the sequential execution queue.
+    
+    Args:
+        evaluation_configs: List of evaluation configuration dictionaries to run sequentially
+    
+    Returns:
+        Boolean indicating success
+    """
+    global _sequential_queue, _sequential_running, _sequential_thread
+    
+    try:
+        # Add evaluations to the queue
+        for config in evaluation_configs:
+            if config not in _sequential_queue:
+                _sequential_queue.append(config.copy())
+                dashboard_logger.info(f"Added evaluation '{config['name']}' to sequential queue (total: {len(_sequential_queue)})")
+                
+                # Mark the evaluation as queued in session state
+                if hasattr(st, 'session_state') and 'evaluations' in st.session_state:
+                    for i, eval_config in enumerate(st.session_state.evaluations):
+                        if eval_config["id"] == config["id"]:
+                            st.session_state.evaluations[i]["status"] = "queued"
+                            st.session_state.evaluations[i]["queued_sequential"] = True
+                            dashboard_logger.debug(f"Marked evaluation {config['id']} as queued_sequential=True")
+                            break
+        
+        # Start the sequential execution thread if it's not already running
+        if not _sequential_running:
+            _sequential_thread = threading.Thread(
+                target=_process_sequential_queue,
+                args=()
+            )
+            _sequential_thread.daemon = True
+            _sequential_thread.start()
+            dashboard_logger.info("Started sequential execution thread")
+        
+        return True
+    except Exception as e:
+        dashboard_logger.error(f"Error adding evaluations to sequential queue: {str(e)}")
+        return False
+
+
+def _process_sequential_queue():
+    """
+    Process evaluations in the sequential queue one at a time.
+    This function runs in a separate thread.
+    """
+    global _sequential_queue, _sequential_running
+    
+    # Set the running flag
+    _sequential_running = True
+    
+    try:
+        dashboard_logger.info(f"Sequential execution thread started with {len(_sequential_queue)} evaluations in queue")
+        
+        # Process evaluations one at a time
+        while _sequential_queue:
+            # Get the next evaluation from the queue
+            eval_config = _sequential_queue.pop(0)
+            eval_id = eval_config["id"]
+            
+            dashboard_logger.info(f"Starting sequential execution of evaluation '{eval_config['name']}' (ID: {eval_id})")
+            dashboard_logger.info(f"Remaining in queue: {len(_sequential_queue)}")
+            
+            try:
+                # Run the evaluation
+                run_benchmark_async(eval_config)
+                
+                # Update evaluation status in session state
+                if hasattr(st, 'session_state') and 'evaluations' in st.session_state:
+                    for i, e in enumerate(st.session_state.evaluations):
+                        if e["id"] == eval_id:
+                            st.session_state.evaluations[i]["queued_sequential"] = False
+                            break
+                
+                # Wait for the evaluation to complete before starting the next one
+                from .constants import DEFAULT_OUTPUT_DIR
+                status_file = Path(DEFAULT_OUTPUT_DIR) / f"eval_{eval_id}_status.json"
+                dashboard_logger.info(f"Waiting for evaluation '{eval_config['name']}' to complete...")
+                
+                # Wait for the evaluation to start (status file to be created)
+                wait_start = time.time()
+                while not status_file.exists() and time.time() - wait_start < 60:  # Wait up to 60 seconds
+                    time.sleep(2)
+                
+                if not status_file.exists():
+                    dashboard_logger.warning(f"Status file not created for evaluation '{eval_config['name']}' after 60 seconds")
+                    continue
+                
+                # Wait for the evaluation to complete
+                while True:
+                    status_data = _read_status_file(status_file)
+                    current_status = status_data.get("status", "unknown")
+                    
+                    if current_status in ["completed", "failed"]:
+                        dashboard_logger.info(f"Evaluation '{eval_config['name']}' {current_status}")
+                        break
+                    
+                    # Log progress periodically
+                    dashboard_logger.debug(f"Evaluation '{eval_config['name']}' status: {current_status}, progress: {status_data.get('progress', 0)}%")
+                    time.sleep(10)  # Check every 10 seconds
+                
+                # Add a small delay between evaluations to ensure clean separation
+                time.sleep(5)
+                dashboard_logger.info(f"Moving to next evaluation in sequential queue. Remaining: {len(_sequential_queue)}")
+                
+            except Exception as e:
+                dashboard_logger.error(f"Error executing evaluation '{eval_config['name']}' in sequential queue: {str(e)}")
+                # Continue with the next evaluation
+        
+        dashboard_logger.info("Sequential execution queue completed")
+    
+    except Exception as e:
+        dashboard_logger.exception(f"Error in sequential execution thread: {str(e)}")
+    finally:
+        # Reset the running flag
+        _sequential_running = False
 
 
 def _read_status_file(status_file):
