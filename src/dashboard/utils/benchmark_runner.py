@@ -84,9 +84,21 @@ def merge_evaluations(evaluation_configs):
         else:
             merged_df = pd.concat([merged_df, config["csv_data"]], ignore_index=True)
     
-    # Create a merged name from all evaluation names
+    # Create a merged name incorporating task types
     evaluation_names = [config["name"] for config in evaluation_configs]
-    merged_name = f"merged_{len(evaluation_configs)}_evaluations"
+    task_types = [config.get("task_type", "") for config in evaluation_configs if config.get("task_type")]
+    
+    # Create a more descriptive name
+    if task_types:
+        # Use up to 3 unique task types in the name
+        unique_types = sorted(set(task_types))
+        task_summary = "_".join(unique_types[:3])
+        if len(unique_types) > 3:
+            task_summary += "_etc"
+        merged_name = f"merged_{len(evaluation_configs)}_{task_summary}"
+    else:
+        # Fallback to generic name
+        merged_name = f"merged_{len(evaluation_configs)}_evaluations"
     
     # Get the union of all selected models across evaluations
     all_models = set()
@@ -128,6 +140,19 @@ def merge_evaluations(evaluation_configs):
                 continue
             break
     
+    # Collect unique task types and task criteria
+    unique_task_types = set()
+    unique_task_criteria = set()
+    for config in evaluation_configs:
+        if config.get("task_type"):
+            unique_task_types.add(config["task_type"])
+        if config.get("task_criteria"):
+            unique_task_criteria.add(config["task_criteria"])
+    
+    # Join unique task types and criteria
+    combined_task_type = ", ".join(sorted(unique_task_types)) if unique_task_types else base_config["task_type"]
+    combined_task_criteria = ", ".join(sorted(unique_task_criteria)) if unique_task_criteria else base_config["task_criteria"]
+    
     # Create merged configuration
     merged_config = {
         "id": merged_id,
@@ -138,8 +163,8 @@ def merge_evaluations(evaluation_configs):
         "csv_data": merged_df,
         "prompt_column": base_config["prompt_column"],
         "golden_answer_column": base_config["golden_answer_column"],
-        "task_type": base_config["task_type"],
-        "task_criteria": base_config["task_criteria"],
+        "task_type": combined_task_type,
+        "task_criteria": combined_task_criteria,
         "selected_models": merged_models,
         "judge_models": merged_judges,
         # Use lowest values of concurrency parameters to be conservative
@@ -154,6 +179,8 @@ def merge_evaluations(evaluation_configs):
     dashboard_logger.info(f"Created merged evaluation '{merged_name}' with ID {merged_id}")
     dashboard_logger.info(f"Merged {len(evaluation_configs)} evaluations with {len(merged_df)} total prompts")
     dashboard_logger.info(f"Using {len(merged_models)} models and {len(merged_judges)} judge models")
+    dashboard_logger.info(f"Combined task types: {combined_task_type}")
+    dashboard_logger.info(f"Combined task criteria: {combined_task_criteria}")
     
     return merged_config
 
